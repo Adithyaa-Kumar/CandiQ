@@ -10,6 +10,7 @@ progresses, so the API can report live progress via polling.
 
 import enum
 import uuid
+from sqlalchemy import ForeignKey
 from datetime import datetime
 
 from sqlalchemy import DateTime, Enum, Integer, String, Text
@@ -41,7 +42,11 @@ class Job(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     owner_id: Mapped[uuid.UUID] = mapped_column(index=True, nullable=False)
-
+    candidate_pool_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("candidate_pools.id"),
+        nullable=False,
+        index=True
+    )
     jd_text: Mapped[str] = mapped_column(Text, nullable=False)
 
     status: Mapped[JobStatus] = mapped_column(

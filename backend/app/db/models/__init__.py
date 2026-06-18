@@ -11,6 +11,7 @@ from app.db.models.candidate import Candidate
 from app.db.models.job import Job, JobStage, JobStatus
 from app.db.models.job_result import JobResult
 from app.db.models.user import User
+from app.db.models.candidate_pool import CandidatePool
 
 __all__ = [
     "User",

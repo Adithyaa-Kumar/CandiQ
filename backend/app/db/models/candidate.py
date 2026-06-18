@@ -12,6 +12,8 @@ foreign key tying this row to its vector.
 """
 
 import uuid
+from sqlalchemy import ForeignKey
+from sqlalchemy import UniqueConstraint
 from datetime import datetime
 
 from sqlalchemy import DateTime, Float, Index, String
@@ -32,7 +34,11 @@ class Candidate(Base):
 
     # Owning recruiter / account — candidates are scoped per-tenant
     owner_id: Mapped[uuid.UUID] = mapped_column(index=True, nullable=False)
-
+    pool_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("candidate_pools.id"),
+        index=True,
+        nullable=False
+    )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     current_title: Mapped[str] = mapped_column(String(255), nullable=True)
     years_of_experience: Mapped[float] = mapped_column(Float, nullable=True)
@@ -49,5 +55,9 @@ class Candidate(Base):
     )
 
     __table_args__ = (
-        Index("ix_candidates_owner_external", "owner_id", "external_id"),
+        UniqueConstraint(
+            "pool_id",
+            "external_id",
+            name="uq_pool_candidate"
+        ),
     )
