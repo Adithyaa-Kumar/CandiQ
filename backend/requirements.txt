@@ -1,0 +1,52 @@
+# ── Web framework ──────────────────────────────────────────────────────────
+fastapi==0.111.0
+uvicorn[standard]==0.30.1
+python-multipart==0.0.9
+
+# ── Settings / config ──────────────────────────────────────────────────────
+pydantic==2.7.4
+pydantic-settings==2.3.4
+
+# ── Database ───────────────────────────────────────────────────────────────
+sqlalchemy==2.0.31
+alembic==1.13.2
+psycopg2-binary==2.9.9
+asyncpg==0.29.0
+
+# ── Async task queue ───────────────────────────────────────────────────────
+celery==5.4.0
+redis==5.0.7
+flower==2.0.1
+
+# ── Vector store ───────────────────────────────────────────────────────────
+qdrant-client==1.10.1
+
+# ── Embeddings ─────────────────────────────────────────────────────────────
+# CPU-only build — this container has no GPU, and the default PyPI wheel
+# would otherwise pull ~2GB of unused nvidia-cu12 CUDA packages, which is
+# what was actually responsible for the long first build.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.3.1+cpu
+sentence-transformers==3.0.1
+rank-bm25==0.2.2
+
+# ── LLM ─────────────────────────────────────────────────────────────────────
+google-generativeai>=0.8.5
+httpx==0.27.0
+
+# ── Security / auth ────────────────────────────────────────────────────────
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+bcrypt==4.0.1
+
+# ── File parsing ───────────────────────────────────────────────────────────
+pypdf==4.2.0
+python-docx==1.1.2
+
+# ── Logging / observability ───────────────────────────────────────────────
+structlog==24.2.0
+
+# ── Utilities ──────────────────────────────────────────────────────────────
+tenacity==8.4.2
+python-dotenv==1.0.1
+email-validator==2.2.0

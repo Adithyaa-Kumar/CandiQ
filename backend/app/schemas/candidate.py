@@ -1,0 +1,28 @@
+"""
+schemas/candidate.py
+─────────────────────
+Request/response models for candidate ingestion.
+"""
+
+import uuid
+from datetime import datetime
+
+from pydantic import BaseModel
+
+
+class CandidateResponse(BaseModel):
+    id: uuid.UUID
+    external_id: str | None
+    name: str
+    current_title: str | None
+    years_of_experience: float | None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class CandidateIngestResponse(BaseModel):
+    """Returned immediately after upload — actual embedding happens async."""
+    task_id: str
+    candidates_received: int
+    message: str
