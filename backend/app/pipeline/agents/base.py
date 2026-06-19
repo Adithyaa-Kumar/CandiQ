@@ -6,7 +6,7 @@ Every agent call goes through `call_agent()` so retry behaviour,
 response parsing, and error handling are consistent and only
 implemented once.
 """
-
+import time
 import json
 import re
 
@@ -41,17 +41,39 @@ def _strip_fences(raw: str) -> str:
     return raw.strip()
 
 
-def _call_llm(prompt: str, max_tokens: int = 2048, model: genai.GenerativeModel | None = None) -> str:
+@retry(
+    stop=stop_after_attempt(5),
+    wait=wait_exponential(multiplier=10, min=10, max=60),
+    reraise=True,
+)
+def _call_llm(
+    prompt: str,
+    max_tokens: int = 2048,
+    model: genai.GenerativeModel | None = None,
+) -> str:
     target = model or AGENT_MODEL
-    response = target.generate_content(
-        prompt,
-        generation_config={
-            "temperature": 0.2,
-            "response_mime_type": "application/json",
-        },
-    )
 
-    return response.text
+    try:
+        response = target.generate_content(
+            prompt,
+            generation_config={
+                "temperature": 0.2,
+                "response_mime_type": "application/json",
+            },
+        )
+
+        return response.text
+
+    except Exception as e:
+        msg = str(e)
+
+        if "429" in msg:
+            logger.warning(
+                "gemini_rate_limited",
+                error=msg,
+            )
+
+        raise
 
 
 def call_agent_batch(

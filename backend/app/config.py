@@ -32,9 +32,9 @@ class Settings(BaseSettings):
     gemini_api_key: str = ""
     
     # Gemini Models
-    gemini_panel_model: str = "gemini-2.0-flash-lite"
-    gemini_arbitrator_model: str = "gemini-2.0-flash-lite"
-    gemini_fast_model: str = "gemini-2.0-flash-lite"
+    gemini_panel_model: str = "gemini-2.5-flash"
+    gemini_arbitrator_model: str = "gemini-2.5-flash"
+    gemini_fast_model: str = "gemini-2.5-flash"
     
     # ── Security ──
     jwt_secret_key: str = "insecure-dev-secret-change-me"
@@ -56,7 +56,7 @@ class Settings(BaseSettings):
     embedding_model_name: str = "all-MiniLM-L6-v2"
 
     # ── Retrieval / shortlist tuning ──
-    shortlist_min_size: int = 50
+    shortlist_min_size: int = 5
     shortlist_max_size: int = 500
     shortlist_percentage: float = 0.10
 

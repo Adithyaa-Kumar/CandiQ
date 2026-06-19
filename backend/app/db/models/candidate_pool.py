@@ -1,4 +1,6 @@
 import uuid
+import enum
+from sqlalchemy import Enum
 from datetime import datetime
 
 from sqlalchemy import DateTime, String
@@ -7,7 +9,11 @@ from sqlalchemy.sql import func
 
 from app.db.base import Base
 
-
+class PoolStatus(str, enum.Enum):
+    PROCESSING = "processing"
+    READY = "ready"
+    FAILED = "failed"
+    
 class CandidatePool(Base):
     __tablename__ = "candidate_pools"
 
@@ -34,4 +40,15 @@ class CandidatePool(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now()
+    )
+    
+    status: Mapped[PoolStatus] = mapped_column(
+        Enum(
+            PoolStatus,
+            name="pool_status",
+            values_callable=lambda x: [e.value for e in x],
+        ),
+        nullable=False,
+        default=PoolStatus.PROCESSING,
+        server_default="processing",
     )

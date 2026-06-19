@@ -16,6 +16,7 @@ from app.logging_conf import get_logger
 from app.pipeline.embed import embed_texts_batch
 from app.pipeline.parse_candidates import build_candidate_text
 from app.vector_store.qdrant_client import upsert_candidate_vectors_batch
+from app.db.models.candidate_pool import CandidatePool, PoolStatus
 
 logger = get_logger(__name__)
 
@@ -24,13 +25,16 @@ EMBED_BATCH_SIZE = 64
 
 @celery_app.task(name="ingest_candidates", bind=True)
 def ingest_candidates_task(self, owner_id: str, pool_id: str, candidates: list[dict]) -> dict:
-    """
-    candidates: list of normalised candidate dicts (already passed through
-    pipeline.ingest.load_candidates / load_candidates_from_text by the API layer).
-    """
     db = SessionLocal()
     owner_uuid = uuid.UUID(owner_id)
     pool_uuid = uuid.UUID(pool_id)
+
+    pool = db.get(CandidatePool, pool_uuid)
+
+    if pool:
+        pool.status = PoolStatus.PROCESSING
+        db.commit()
+
     inserted = 0
     errors = 0
 
@@ -90,12 +94,24 @@ def ingest_candidates_task(self, owner_id: str, pool_id: str, candidates: list[d
         if qdrant_points:
             upsert_candidate_vectors_batch(qdrant_points)
 
-        logger.info("ingest_complete", owner_id=owner_id, inserted=inserted, errors=errors)
+        pool = db.get(CandidatePool, pool_uuid)
+        if pool:
+            pool.status = PoolStatus.READY
+
+        db.commit()
         return {"inserted": inserted, "errors": errors, "total": len(candidates)}
 
     except Exception as e:
         db.rollback()
+
+        pool = db.get(CandidatePool, pool_uuid)
+        if pool:
+            pool.status = PoolStatus.FAILED
+            db.commit()
+
         logger.error("ingest_task_failed", owner_id=owner_id, error=str(e))
         raise
     finally:
         db.close()
+        
+    

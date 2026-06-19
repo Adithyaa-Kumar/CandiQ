@@ -25,6 +25,7 @@ from app.logging_conf import get_logger
 from app.pipeline.agents.panel import run_panel_pipeline
 from app.pipeline.jd_analyzer import analyze_jd
 from app.pipeline.retrieval import run_retrieval_filter
+from app.db.models.candidate_pool import CandidatePool, PoolStatus
 
 logger = get_logger(__name__)
 
@@ -50,6 +51,27 @@ def evaluate_job_task(self, job_id: str) -> dict:
         if not job:
             logger.error("evaluate_job.not_found", job_id=job_id)
             return {"error": "job not found"}
+
+        # Check candidate pool race conditions immediately after retrieving the job
+        pool = db.get(CandidatePool, job.candidate_pool_id)
+        if not pool:
+            _update_job(
+                db,
+                job,
+                status=JobStatus.FAILED,
+                error_message="Candidate pool not found",
+            )
+            return {"error": "pool not found"}
+
+        if pool.status != PoolStatus.READY:
+            _update_job(
+                db,
+                job,
+                status=JobStatus.FAILED,
+                error_message=f"Pool status: {pool.status}",
+                status_message="Candidate upload still processing",
+            )
+            return {"error": "pool not ready"}
 
         _update_job(
             db, job,
@@ -141,7 +163,8 @@ def evaluate_job_task(self, job_id: str) -> dict:
         def _progress_cb(completed: int, total: int) -> None:
             pct = 35 + int((completed / max(total, 1)) * 45)  # 35 -> 80
             _update_job(
-                db, job,
+                db,
+                job,
                 progress_pct=pct,
                 status_message=f"Specialist panel reviewing candidates ({completed}/{total})...",
             )
