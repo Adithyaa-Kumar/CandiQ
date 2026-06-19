@@ -23,13 +23,14 @@ EMBED_BATCH_SIZE = 64
 
 
 @celery_app.task(name="ingest_candidates", bind=True)
-def ingest_candidates_task(self, owner_id: str, candidates: list[dict]) -> dict:
+def ingest_candidates_task(self, owner_id: str, pool_id: str, candidates: list[dict]) -> dict:
     """
     candidates: list of normalised candidate dicts (already passed through
     pipeline.ingest.load_candidates / load_candidates_from_text by the API layer).
     """
     db = SessionLocal()
     owner_uuid = uuid.UUID(owner_id)
+    pool_uuid = uuid.UUID(pool_id)
     inserted = 0
     errors = 0
 
@@ -57,6 +58,7 @@ def ingest_candidates_task(self, owner_id: str, candidates: list[dict]) -> dict:
                     id=uuid.uuid4(),
                     external_id=c.get("candidate_id"),
                     owner_id=owner_uuid,
+                    pool_id=pool_uuid,
                     name=profile.get("anonymized_name", "Unknown"),
                     current_title=profile.get("current_title", ""),
                     years_of_experience=profile.get("years_of_experience", 0),

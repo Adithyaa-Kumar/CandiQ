@@ -79,8 +79,12 @@ def evaluate_job_task(self, job_id: str) -> dict:
             status_message=f"Role understood: {jd_signals.role_title}",
         )
 
-        # ── Load candidate pool for this recruiter ──────────────────────
-        candidate_rows = db.query(Candidate).filter(Candidate.owner_id == job.owner_id).all()
+        # ── Load candidate pool for this job ────────────────────────────
+        candidate_rows = (
+            db.query(Candidate)
+            .filter(Candidate.pool_id == job.candidate_pool_id)
+            .all()
+        )
         total_candidates = len(candidate_rows)
 
         if total_candidates == 0:

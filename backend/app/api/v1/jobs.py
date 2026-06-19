@@ -32,12 +32,21 @@ router = APIRouter(prefix="/jobs", tags=["jobs"])
 
 @router.post("", response_model=JobCreateResponse, status_code=202)
 async def create_job(
+    pool_id: str = Form(...),
     jd_text: Optional[str] = Form(None),
     jd_file: Optional[UploadFile] = File(None),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
     _: None = Depends(enforce_rate_limit),
 ):
+    from app.db.models.candidate_pool import CandidatePool
+    pool = db.query(CandidatePool).filter(
+        CandidatePool.id == pool_id,
+        CandidatePool.owner_id == user.id,
+    ).first()
+    if not pool:
+        raise InvalidInputError("Pool not found or does not belong to you")
+
     if jd_file and jd_file.filename:
         raw = await jd_file.read()
         jd = _extract_jd_text(raw, jd_file.filename)
@@ -49,7 +58,13 @@ async def create_job(
     if len(jd) < 30:
         raise InvalidInputError("Job description is too short to analyze")
 
-    job = Job(id=uuid.uuid4(), owner_id=user.id, jd_text=jd, status=JobStatus.PENDING)
+    job = Job(
+        id=uuid.uuid4(),
+        owner_id=user.id,
+        candidate_pool_id=uuid.UUID(pool_id),
+        jd_text=jd,
+        status=JobStatus.PENDING,
+    )
     db.add(job)
     db.commit()
     db.refresh(job)

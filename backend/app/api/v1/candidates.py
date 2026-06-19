@@ -26,11 +26,21 @@ router = APIRouter(prefix="/candidates", tags=["candidates"])
 
 @router.post("/upload", response_model=CandidateIngestResponse, status_code=202)
 async def upload_candidates(
+    pool_id: str = Form(...),
     candidates_text: Optional[str] = Form(None),
     candidates_file: Optional[UploadFile] = File(None),
     user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
     _: None = Depends(enforce_rate_limit),
 ):
+    from app.db.models.candidate_pool import CandidatePool
+    pool = db.query(CandidatePool).filter(
+        CandidatePool.id == pool_id,
+        CandidatePool.owner_id == user.id,
+    ).first()
+    if not pool:
+        raise InvalidInputError("Pool not found or does not belong to you")
+
     if candidates_file and candidates_file.filename:
         raw = await candidates_file.read()
         candidates = load_candidates(raw, candidates_file.filename)
@@ -42,7 +52,7 @@ async def upload_candidates(
     if not candidates:
         raise InvalidInputError("No candidates found in the provided input")
 
-    task = ingest_candidates_task.delay(str(user.id), candidates)
+    task = ingest_candidates_task.delay(str(user.id), pool_id, candidates)
 
     return CandidateIngestResponse(
         task_id=task.id,

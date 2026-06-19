@@ -57,7 +57,9 @@ class JobResultItem(BaseModel):
     rule_composite_score: float | None
     consensus_score: float | None
     final_rank: int | None
-    executive_summary: str | None
+    strengths: list[str] = Field(default_factory=list)
+    risks: list[str] = Field(default_factory=list)
+    alternatives: list[str] = Field(default_factory=list)
     agent_reviews: list[AgentReviewResponse] = Field(default_factory=list)
 
     model_config = {"from_attributes": True}

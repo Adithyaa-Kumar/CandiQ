@@ -1,75 +1,87 @@
 """
-schemas/job.py
-───────────────
-Request/response models for the evaluation job lifecycle:
-create → poll status → fetch results.
+db/models/job.py
+─────────────────
+SQLAlchemy ORM model for evaluation jobs.
+
+A Job ties a JD to a CandidatePool and tracks the full lifecycle:
+pending → running → completed | failed, with per-stage progress.
 """
 
+import enum
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from sqlalchemy import DateTime, Enum, ForeignKey, Integer, String, Text
+from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.sql import func
 
-from app.db.models.job import JobStage, JobStatus
-from app.schemas.agent_review import AgentReviewResponse
-
-
-class JobCreateResponse(BaseModel):
-    """Returned immediately on POST /jobs — the task runs in the background."""
-    job_id: uuid.UUID
-    status: JobStatus
-    message: str
+from app.db.base import Base
 
 
-class JDSignalsResponse(BaseModel):
-    role_title: str
-    domain: str
-    seniority: str
-    exp_min: int
-    exp_max: int
-    top_skills: list[tuple[str, int]] = Field(default_factory=list)
+class JobStatus(str, enum.Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
 
 
-class JobStatusResponse(BaseModel):
-    job_id: uuid.UUID
-    status: JobStatus
-    current_stage: JobStage
-    progress_pct: int
-    status_message: str | None
-    error_message: str | None
-    jd_signals: JDSignalsResponse | None
-    total_candidates: int
-    disqualified_count: int
-    shortlisted_count: int
-    created_at: datetime
-    started_at: datetime | None
-    completed_at: datetime | None
-
-    model_config = {"from_attributes": True}
+class JobStage(str, enum.Enum):
+    QUEUED = "queued"
+    ANALYZING_JD = "analyzing_jd"
+    RETRIEVAL_FILTER = "retrieval_filter"
+    SPECIALIST_PANEL = "specialist_panel"
+    ARBITRATION = "arbitration"
+    DONE = "done"
 
 
-class JobResultItem(BaseModel):
-    candidate_id: uuid.UUID
-    candidate_name: str
-    current_title: str | None
-    retrieval_score: float | None
-    retrieval_method: str | None
-    rule_composite_score: float | None
-    consensus_score: float | None
-    final_rank: int | None
-    strengths: list[str] = Field(default_factory=list)
-    risks: list[str] = Field(default_factory=list)
-    alternatives: list[str] = Field(default_factory=list)
-    agent_reviews: list[AgentReviewResponse] = Field(default_factory=list)
+class Job(Base):
+    __tablename__ = "jobs"
 
-    model_config = {"from_attributes": True}
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
 
+    # Owning recruiter
+    owner_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True, nullable=False)
 
-class JobResultsResponse(BaseModel):
-    job_id: uuid.UUID
-    status: JobStatus
-    role_title: str | None
-    total_candidates: int
-    disqualified_count: int
-    shortlisted_count: int
-    results: list[JobResultItem]
+    # The pool of candidates this job evaluates against
+    candidate_pool_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("candidate_pools.id"),
+        index=True,
+        nullable=False,
+    )
+
+    jd_text: Mapped[str] = mapped_column(Text, nullable=False)
+
+    status: Mapped[JobStatus] = mapped_column(
+        Enum(JobStatus, name="job_status", create_type=False),
+        nullable=False,
+        default=JobStatus.PENDING,
+        server_default="pending",
+    )
+    current_stage: Mapped[JobStage] = mapped_column(
+        Enum(JobStage, name="job_stage", create_type=False),
+        nullable=False,
+        default=JobStage.QUEUED,
+        server_default="queued",
+    )
+
+    progress_pct: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    status_message: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Cached structured output from the JD analyzer
+    jd_signals: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    # Counters updated as the pipeline runs
+    total_candidates: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    disqualified_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    shortlisted_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    results: Mapped[list["JobResult"]] = relationship(  # noqa: F821
+        "JobResult", backref="job", cascade="all, delete-orphan", lazy="dynamic"
+    )
