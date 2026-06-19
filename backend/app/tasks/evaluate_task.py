@@ -42,7 +42,7 @@ def _update_job(db, job: Job, **fields) -> None:
     db.commit()
 
 
-@celery_app.task(name="evaluate_job", bind=True)
+@celery_app.task(name="evaluate_job", bind=True, max_retries=50)
 def evaluate_job_task(self, job_id: str) -> dict:
     db = SessionLocal()
 
@@ -64,14 +64,13 @@ def evaluate_job_task(self, job_id: str) -> dict:
             return {"error": "pool not found"}
 
         if pool.status != PoolStatus.READY:
-            _update_job(
-                db,
-                job,
-                status=JobStatus.FAILED,
-                error_message=f"Pool status: {pool.status}",
-                status_message="Candidate upload still processing",
+            logger.info(
+                "waiting_for_pool",
+                pool_id=str(pool.id),
+                status=str(pool.status),
             )
-            return {"error": "pool not ready"}
+
+            raise self.retry(countdown=10)
 
         _update_job(
             db, job,

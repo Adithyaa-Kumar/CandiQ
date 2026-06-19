@@ -58,6 +58,30 @@ settings = get_settings()
 logger = get_logger(__name__)
 
 
+def _build_jd_query_text(
+    jd_text: str,
+    signals: JDSignals
+) -> str:
+
+    skills = ", ".join(signals.skill_weights.keys())
+
+    return f"""
+Role: {signals.role_title}
+
+Domain: {signals.domain}
+
+Seniority: {signals.seniority}
+
+Required Skills:
+{skills}
+
+Ideal Candidate:
+{signals.ideal_candidate_summary}
+
+Original JD:
+{jd_text}
+"""
+
 def compute_shortlist_size(total_qualified: int) -> int:
     """Adaptive cap: never below shortlist_min_size, never above shortlist_max_size."""
     raw = math.ceil(settings.shortlist_percentage * total_qualified)
@@ -212,32 +236,6 @@ def run_retrieval_filter(
         "shortlist_size": len(shortlist),
     }
 
-
-    def _build_jd_query_text(
-        jd_text: str,
-        signals: JDSignals
-    ) -> str:
-
-        skills = ", ".join(
-            signals.skill_weights.keys()
-        )
-
-        return f"""
-    Role: {signals.role_title}
-
-    Domain: {signals.domain}
-
-    Seniority: {signals.seniority}
-
-    Required Skills:
-    {skills}
-
-    Ideal Candidate:
-    {signals.ideal_candidate_summary}
-
-    Original JD:
-    {jd_text}
-    """
 
 def _tokenize(text: str) -> list[str]:
     return [t.lower() for t in text.replace(",", " ").replace("/", " ").split() if len(t) > 1]

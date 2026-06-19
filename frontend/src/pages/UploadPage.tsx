@@ -53,7 +53,9 @@ export default function UploadPage() {
       })
 
       setCandidatesReceived(data.candidates_received)
+      setTimeout(() => {
       setStep("ready_to_evaluate")
+      }, 25000)
     } catch (e) {
       setError(extractErrorMessage(e))
       setStep("idle")
@@ -136,7 +138,7 @@ export default function UploadPage() {
               : "bg-bg text-[#2a3a4a] border border-border cursor-not-allowed"
           }`}
         >
-          {step === "uploading_candidates" ? "Uploading..." : "Upload Candidates"}
+          {step === "uploading_candidates" ? "Processing Candidates..." : "Upload Candidates"}
         </button>
       </div>
 
@@ -178,7 +180,7 @@ export default function UploadPage() {
         </button>
         {step !== "ready_to_evaluate" && step !== "submitting_job" && (
           <p className="text-[#2a3a4a] text-xs mt-3">
-            Upload your candidate pool first, then add a job description to continue
+            Candidates are being embedded and indexed. Evaluation will unlock automatically.
           </p>
         )}
       </div>
