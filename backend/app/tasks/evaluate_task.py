@@ -145,9 +145,16 @@ def evaluate_job_task(self, job_id: str) -> dict:
                 progress_pct=pct,
                 status_message=f"Specialist panel reviewing candidates ({completed}/{total})...",
             )
-
+        logger.info(
+            "panel_input",
+            shortlisted=len(shortlisted_candidate_dicts)
+        )
         panel_result = run_panel_pipeline(jd_signals, shortlisted_candidate_dicts, _progress_cb)
-
+        logger.info(
+            "panel_output",
+            verdicts=len(panel_result.verdicts)
+        )
+        
         _update_job(
             db, job,
             current_stage=JobStage.ARBITRATION,

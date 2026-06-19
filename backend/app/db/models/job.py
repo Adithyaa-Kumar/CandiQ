@@ -54,13 +54,23 @@ class Job(Base):
     jd_text: Mapped[str] = mapped_column(Text, nullable=False)
 
     status: Mapped[JobStatus] = mapped_column(
-        Enum(JobStatus, name="job_status", create_type=False),
+        Enum(
+            JobStatus,
+            name="job_status",
+            create_type=False,
+            values_callable=lambda x: [e.value for e in x],
+        ),
         nullable=False,
         default=JobStatus.PENDING,
         server_default="pending",
     )
     current_stage: Mapped[JobStage] = mapped_column(
-        Enum(JobStage, name="job_stage", create_type=False),
+        Enum(
+            JobStage,
+            name="job_stage",
+            create_type=False,
+            values_callable=lambda x: [e.value for e in x],
+        ),
         nullable=False,
         default=JobStage.QUEUED,
         server_default="queued",

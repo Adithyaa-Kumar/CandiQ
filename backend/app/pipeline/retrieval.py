@@ -213,14 +213,31 @@ def run_retrieval_filter(
     }
 
 
-def _build_jd_query_text(jd_text: str, signals: JDSignals) -> str:
-    """
-    Augment the raw JD with extracted skill terms so both dense and
-    sparse search benefit from JD analysis, not just raw JD prose.
-    """
-    skill_terms = " ".join(signals.skill_weights.keys())
-    return f"{jd_text}\n\nKey skills: {skill_terms}\n\nIdeal candidate: {signals.ideal_candidate_summary}"
+    def _build_jd_query_text(
+        jd_text: str,
+        signals: JDSignals
+    ) -> str:
 
+        skills = ", ".join(
+            signals.skill_weights.keys()
+        )
+
+        return f"""
+    Role: {signals.role_title}
+
+    Domain: {signals.domain}
+
+    Seniority: {signals.seniority}
+
+    Required Skills:
+    {skills}
+
+    Ideal Candidate:
+    {signals.ideal_candidate_summary}
+
+    Original JD:
+    {jd_text}
+    """
 
 def _tokenize(text: str) -> list[str]:
     return [t.lower() for t in text.replace(",", " ").replace("/", " ").split() if len(t) > 1]

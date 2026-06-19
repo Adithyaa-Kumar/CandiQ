@@ -30,7 +30,12 @@ class Settings(BaseSettings):
 
     # ── Gemini ──
     gemini_api_key: str = ""
-
+    
+    # Gemini Models
+    gemini_panel_model: str = "gemini-2.0-flash-lite"
+    gemini_arbitrator_model: str = "gemini-2.0-flash-lite"
+    gemini_fast_model: str = "gemini-2.0-flash-lite"
+    
     # ── Security ──
     jwt_secret_key: str = "insecure-dev-secret-change-me"
     jwt_algorithm: str = "HS256"

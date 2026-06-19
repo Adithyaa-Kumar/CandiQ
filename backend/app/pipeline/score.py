@@ -18,6 +18,7 @@ replacing it.
 """
 
 from app.pipeline.jd_analyzer import JDSignals
+from app.pipeline.role_match import compute_role_relevance
 
 
 def score_candidate(flags: dict, signals: JDSignals) -> dict:
@@ -33,7 +34,8 @@ def score_candidate(flags: dict, signals: JDSignals) -> dict:
     score_career = _score_career(flags, signals)
     score_activity = _score_activity(flags)
     score_platform = _score_platform(flags)
-
+    role_relevance = compute_role_relevance(flags, signals)
+    
     dw = signals.dim_weights
     composite = round(
         score_skills * dw.get("skills", 0.40)
@@ -55,19 +57,28 @@ def score_candidate(flags: dict, signals: JDSignals) -> dict:
         "score_career": score_career,
         "score_platform": score_platform,
         "composite_score": composite,
+        "role_relevance": role_relevance,
     }
 
 
 def _check_disqualifiers(flags: dict, signals: JDSignals) -> tuple[bool, str]:
+    
     if flags["yoe"] < max(1, signals.exp_min - 2):
         return True, f"Under-experienced: {flags['yoe']} yrs (min ~{signals.exp_min})"
 
     if signals.requires_product_co and flags["is_consulting_only"]:
         return True, "JD requires product company background; only consulting found"
 
-    if flags["has_bad_title"] and not flags["has_product_co"]:
-        return True, f"Irrelevant title: '{flags['current_title']}'"
+    role_relevance = compute_role_relevance(flags, signals)
 
+    if role_relevance < 10:
+        return True, "Insufficient role relevance"
+
+    skill_score = _score_skills(flags, signals)
+
+    if skill_score < 15:
+        return True, "Insufficient skill overlap"
+    
     if flags["days_since_active"] > 365 and not flags["open_to_work"] and flags["has_known_activity_data"]:
         return True, "Inactive 12+ months and not open to work"
 
