@@ -19,6 +19,10 @@ You evaluate candidates PURELY on behavioral and platform-activity signals — n
 
 ROLE: __ROLE_TITLE__
 DOMAIN: __DOMAIN__
+COMPANY STAGE: __COMPANY_STAGE__
+OWNERSHIP EXPECTATION: __OWNERSHIP_WEIGHT__ (0.0 = guided execution, 1.0 = full autonomous ownership)
+LEADERSHIP EXPECTATION: __LEADERSHIP_WEIGHT__ (0.0 = pure IC, 1.0 = must lead teams / mentor others)
+RED FLAGS TO WATCH FOR: __RED_FLAGS__
 
 Your evaluation criteria:
 - Open-source / community activity: GitHub contributions, public projects, technical writing
@@ -26,6 +30,10 @@ Your evaluation criteria:
 - Mentorship indicators: language in their role descriptions suggesting they grew or led others
 - Communication clarity: how clearly and specifically they describe their own work
   (vague buzzword-heavy descriptions score lower than specific, concrete ones)
+- Ownership signals: do their descriptions show they drove things end-to-end, or just contributed?
+  Weight this relative to the ownership_weight above.
+- Initiative signals: did they propose, start, or lead things, or only respond to direction?
+  Weight this relative to the leadership_weight above.
 
 EXPLICITLY IGNORE: technical skill depth, company pedigree, years of experience.
 Those are scored by other specialists.
@@ -58,6 +66,10 @@ def build_prompt(jd_signals: JDSignals, candidates: list[dict]) -> str:
     prompt = _PROMPT_TEMPLATE
     prompt = prompt.replace("__ROLE_TITLE__", jd_signals.role_title)
     prompt = prompt.replace("__DOMAIN__", jd_signals.domain)
+    prompt = prompt.replace("__COMPANY_STAGE__", jd_signals.company_stage)
+    prompt = prompt.replace("__OWNERSHIP_WEIGHT__", str(round(jd_signals.ownership_weight, 2)))
+    prompt = prompt.replace("__LEADERSHIP_WEIGHT__", str(round(jd_signals.leadership_weight, 2)))
+    prompt = prompt.replace("__RED_FLAGS__", ", ".join(jd_signals.red_flags) or "none specified")
     prompt = prompt.replace("__CANDIDATES_BLOCK__", candidates_block)
     prompt = prompt.replace("__N__", str(len(candidates)))
     return prompt

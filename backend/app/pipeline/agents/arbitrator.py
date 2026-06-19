@@ -19,11 +19,19 @@ import re
 from pydantic import BaseModel
 from tenacity import retry, stop_after_attempt, wait_exponential
 
+import google.generativeai as genai
+
 from app.pipeline.agents.base import AgentReviewResult, _call_llm, _strip_fences
 from app.pipeline.jd_analyzer import JDSignals
+from app.config import get_settings
 from app.logging_conf import get_logger
 
 logger = get_logger(__name__)
+
+_settings = get_settings()
+# Arbitrator runs far fewer calls than specialists (~batches of 8 vs full shortlist),
+# so we can afford the stronger model here — this is the highest-judgment step.
+_ARBITRATOR_MODEL = genai.GenerativeModel(_settings.gemini_arbitrator_model)
 
 ARBITRATOR_BATCH_SIZE = 8
 
@@ -31,7 +39,9 @@ ARBITRATOR_BATCH_SIZE = 8
 class ArbitratorVerdict(BaseModel):
     candidate_id: str
     consensus_score: float
-    executive_summary: str
+    strengths: list[str]
+    risks: list[str]
+    alternatives: list[str]   # other candidates worth considering if this one is unavailable
 
 
 _PROMPT_TEMPLATE = """You are the Lead Recruitment Arbitrator. You have three specialist panel
@@ -52,9 +62,11 @@ Your job:
 1. Do NOT simply average the three scores. Use judgement — if the Tech Specialist
    flags a hard disqualifying gap (e.g. zero relevant stack experience), that should
    weigh more heavily than a strong trajectory score for a highly technical role.
-2. Write a short executive summary (2-3 sentences) explaining the verdict in plain
-   recruiter-facing language — why this candidate ranks where they do, referencing
-   the most decision-relevant pro and con.
+2. Produce three short lists:
+   - strengths: 2-4 bullets on why this candidate stands out (recruiter-facing, specific)
+   - risks: 1-3 bullets on genuine concerns or gaps a hiring manager should probe
+   - alternatives: candidate_ids of other candidates in this batch who could substitute
+     if this candidate declines or falls through (leave empty [] if none)
 
 CANDIDATES AND PANEL REVIEWS:
 __CANDIDATES_BLOCK__
@@ -65,7 +77,9 @@ Respond ONLY with valid JSON, no markdown fences:
     {
       "candidate_id": "<id>",
       "consensus_score": <0-100>,
-      "executive_summary": "<2-3 sentences>"
+      "strengths": ["<short phrase>", "..."],
+      "risks": ["<short phrase>", "..."],
+      "alternatives": ["<candidate_id>", "..."]
     }
   ]
 }
@@ -115,7 +129,9 @@ def _fallback_verdict(candidate_id: str, reviews: dict[str, AgentReviewResult]) 
     return ArbitratorVerdict(
         candidate_id=candidate_id,
         consensus_score=round(sum(scores) / len(scores), 2),
-        executive_summary="Automated consensus (arbitrator unavailable) — simple average of panel scores.",
+        strengths=["Automated consensus — arbitrator unavailable"],
+        risks=["Scores are a simple average of panel; treat with lower confidence"],
+        alternatives=[],
     )
 
 
@@ -141,7 +157,7 @@ def run_arbitrator(
         expected_ids = [cid for cid, _, _ in batch]
 
         try:
-            raw = _call_llm(prompt, max_tokens=4096)
+            raw = _call_llm(prompt, max_tokens=4096, model=_ARBITRATOR_MODEL)
             cleaned = _strip_fences(raw)
             data = json.loads(cleaned)
             verdicts = data.get("verdicts", [])
@@ -154,7 +170,9 @@ def run_arbitrator(
                 batch_results[cid] = ArbitratorVerdict(
                     candidate_id=cid,
                     consensus_score=float(item.get("consensus_score", 50.0)),
-                    executive_summary=str(item.get("executive_summary", ""))[:1000],
+                    strengths=[str(s) for s in item.get("strengths", [])],
+                    risks=[str(r) for r in item.get("risks", [])],
+                    alternatives=[str(a) for a in item.get("alternatives", [])],
                 )
 
             for cid, name, reviews in batch:

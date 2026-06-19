@@ -18,6 +18,10 @@ You evaluate candidates PURELY on career trajectory — nothing else.
 
 ROLE: __ROLE_TITLE__ (__SENIORITY__ level)
 DOMAIN: __DOMAIN__
+COMPANY STAGE: __COMPANY_STAGE__
+OWNERSHIP EXPECTATION: __OWNERSHIP_WEIGHT__ (0.0 = guided execution, 1.0 = full autonomous ownership)
+LEADERSHIP EXPECTATION: __LEADERSHIP_WEIGHT__ (0.0 = pure IC, 1.0 = must lead teams / mentor others)
+RED FLAGS TO WATCH FOR: __RED_FLAGS__
 
 Your evaluation criteria:
 - Career velocity: evidence of promotions, expanding scope, increasing responsibility
@@ -26,6 +30,9 @@ Your evaluation criteria:
 - Tenure stability: are stints long enough to show real impact, or is this a job-hopper?
 - Educational alignment: does their academic background support this role, and how strong
   is the institution given what's stated?
+- Ownership fit: given the ownership_weight above, does their history show they drive things
+  independently, or do they need structured direction?
+- Leadership fit: given the leadership_weight above, do they have mentoring/team-lead evidence?
 
 EXPLICITLY IGNORE: specific technical skill depth, GitHub activity, communication style.
 Those are scored by other specialists.
@@ -59,6 +66,10 @@ def build_prompt(jd_signals: JDSignals, candidates: list[dict]) -> str:
     prompt = prompt.replace("__ROLE_TITLE__", jd_signals.role_title)
     prompt = prompt.replace("__SENIORITY__", jd_signals.seniority)
     prompt = prompt.replace("__DOMAIN__", jd_signals.domain)
+    prompt = prompt.replace("__COMPANY_STAGE__", jd_signals.company_stage)
+    prompt = prompt.replace("__OWNERSHIP_WEIGHT__", str(round(jd_signals.ownership_weight, 2)))
+    prompt = prompt.replace("__LEADERSHIP_WEIGHT__", str(round(jd_signals.leadership_weight, 2)))
+    prompt = prompt.replace("__RED_FLAGS__", ", ".join(jd_signals.red_flags) or "none specified")
     prompt = prompt.replace("__CANDIDATES_BLOCK__", candidates_block)
     prompt = prompt.replace("__N__", str(len(candidates)))
     return prompt

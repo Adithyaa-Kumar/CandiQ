@@ -106,7 +106,7 @@ def evaluate_job_task(self, job_id: str) -> dict:
         )
 
         # ── Stage 1b/c/d: hybrid retrieval ───────────────────────────────
-        retrieval_result = run_retrieval_filter(job.jd_text, jd_signals, candidate_dicts)
+        retrieval_result = run_retrieval_filter(job.jd_text, jd_signals, candidate_dicts, job.owner_id)
 
         shortlist = retrieval_result["shortlist"]
         disqualified = retrieval_result["disqualified"]
@@ -172,7 +172,9 @@ def evaluate_job_task(self, job_id: str) -> dict:
                 retrieval_method=retrieval_method,
                 rule_composite_score=rule_score["composite_score"],
                 consensus_score=verdict.consensus_score if verdict else None,
-                executive_summary=verdict.executive_summary if verdict else None,
+                strengths=verdict.strengths if verdict else [],
+                risks=verdict.risks if verdict else [],
+                alternatives=verdict.alternatives if verdict else [],
                 is_disqualified=False,
             )
             db.add(job_result)

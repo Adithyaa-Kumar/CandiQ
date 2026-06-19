@@ -42,14 +42,16 @@ too few surviving on a small pool.
 """
 
 import math
+import uuid
 
 from rank_bm25 import BM25Okapi
 
 from app.config import get_settings
-from app.pipeline.embed import embed_text, embed_texts_batch
+from app.pipeline.embed import embed_text
 from app.pipeline.jd_analyzer import JDSignals
 from app.pipeline.parse_candidates import build_candidate_text, get_career_flags
 from app.pipeline.score import score_candidate
+from app.vector_store.qdrant_client import dense_search
 from app.logging_conf import get_logger
 
 settings = get_settings()
@@ -66,6 +68,7 @@ def run_retrieval_filter(
     jd_text: str,
     signals: JDSignals,
     candidates: list[dict],
+    owner_id: uuid.UUID,
 ) -> dict:
     """
     Full Stage 1 pipeline. Returns a dict with:
@@ -116,13 +119,33 @@ def run_retrieval_filter(
             "shortlist_size": len(shortlist),
         }
 
-    # ── Step 2: dense vector search ─────────────────────────────────────────
+    # ── Step 2: dense vector search — Qdrant ANN lookup against vectors ────
+    # already stored at ingest time. Nothing gets re-embedded here; this is
+    # the actual fix for the 30-minute bottleneck the module docstring
+    # above describes (previously this called embed_texts_batch() on every
+    # qualified candidate, on every job run).
     jd_embedding = embed_text(_build_jd_query_text(jd_text, signals))
 
-    candidate_texts = [build_candidate_text(c) for c, _, _ in qualified]
-    candidate_embeddings = embed_texts_batch(candidate_texts)
+    qualified_ext_ids = {c.get("candidate_id") for c, _, _ in qualified}
+    qdrant_hits = dense_search(jd_embedding, owner_id=owner_id, limit=total)
 
-    dense_scores = _cosine_similarities(jd_embedding, candidate_embeddings)
+    dense_score_by_ext_id = {
+        hit["payload"].get("external_id"): hit["score"]
+        for hit in qdrant_hits
+        if hit["payload"].get("external_id") in qualified_ext_ids
+    }
+    if len(dense_score_by_ext_id) < len(qualified):
+        logger.warning(
+            "retrieval.qdrant_coverage_gap",
+            qualified=len(qualified),
+            qdrant_matches=len(dense_score_by_ext_id),
+            hint="some candidates may predate the external_id payload field — re-ingest to backfill",
+        )
+
+    candidate_texts = [build_candidate_text(c) for c, _, _ in qualified]  # still needed for BM25 below
+    dense_scores = [
+        dense_score_by_ext_id.get(c.get("candidate_id"), 0.0) for c, _, _ in qualified
+    ]
     dense_ranked = sorted(
         range(len(qualified)), key=lambda i: dense_scores[i], reverse=True
     )
@@ -201,17 +224,3 @@ def _build_jd_query_text(jd_text: str, signals: JDSignals) -> str:
 
 def _tokenize(text: str) -> list[str]:
     return [t.lower() for t in text.replace(",", " ").replace("/", " ").split() if len(t) > 1]
-
-
-def _cosine_similarities(query_vec: list[float], doc_vecs: list[list[float]]) -> list[float]:
-    """Plain-Python cosine similarity — embeddings are already unit-normalisable floats."""
-    import math as _m
-
-    def _dot(a, b):
-        return sum(x * y for x, y in zip(a, b))
-
-    def _norm(a):
-        return _m.sqrt(sum(x * x for x in a)) or 1e-9
-
-    q_norm = _norm(query_vec)
-    return [_dot(query_vec, d) / (q_norm * _norm(d)) for d in doc_vecs]

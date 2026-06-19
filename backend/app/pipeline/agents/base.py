@@ -23,7 +23,7 @@ logger = get_logger(__name__)
 
 genai.configure(api_key=settings.gemini_api_key)
 
-AGENT_MODEL = genai.GenerativeModel("gemini-2.5-flash")
+AGENT_MODEL = genai.GenerativeModel(settings.gemini_panel_model)
 
 
 class AgentReviewResult(BaseModel):
@@ -41,8 +41,9 @@ def _strip_fences(raw: str) -> str:
     return raw.strip()
 
 
-def _call_llm(prompt: str, max_tokens: int = 2048) -> str:
-    response = AGENT_MODEL.generate_content(
+def _call_llm(prompt: str, max_tokens: int = 2048, model: genai.GenerativeModel | None = None) -> str:
+    target = model or AGENT_MODEL
+    response = target.generate_content(
         prompt,
         generation_config={
             "temperature": 0.2,

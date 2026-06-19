@@ -71,6 +71,7 @@ def ingest_candidates_task(self, owner_id: str, candidates: list[dict]) -> dict:
                     {
                         "owner_id": str(owner_uuid),
                         "candidate_db_id": str(candidate_row.id),
+                        "external_id": c.get("candidate_id"),
                         "name": profile.get("anonymized_name", "Unknown"),
                         "current_title": profile.get("current_title", ""),
                     },

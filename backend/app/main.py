@@ -27,7 +27,33 @@ async def lifespan(app: FastAPI):
     logger.info("app.shutdown")
 
 
+def _assert_prod_secrets() -> None:
+    """Fail fast at startup rather than silently running with insecure defaults."""
+    if not settings.is_production:
+        return
+
+    errors: list[str] = []
+
+    if settings.jwt_secret_key == "insecure-dev-secret-change-me":
+        errors.append("JWT_SECRET_KEY is still the insecure dev default — set a strong random value")
+
+    if not settings.gemini_api_key:
+        errors.append("GEMINI_API_KEY is not set — all agent calls will fail")
+
+    flower_password = __import__("os").environ.get("FLOWER_PASSWORD", "changeme")
+    if flower_password == "changeme":
+        errors.append("FLOWER_PASSWORD is still the default 'changeme' — set a real password in .env")
+
+    if errors:
+        bullet_list = "\n  • ".join(errors)
+        raise RuntimeError(
+            f"CandiQ refusing to start in production with unsafe configuration:\n  • {bullet_list}"
+        )
+
+
 def create_app() -> FastAPI:
+    _assert_prod_secrets()
+
     app = FastAPI(
         title="CandiQ API",
         version="2.0.0",

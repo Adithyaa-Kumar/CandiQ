@@ -31,7 +31,7 @@ logger = get_logger(__name__)
 
 genai.configure(api_key=settings.gemini_api_key)
 
-MODEL = genai.GenerativeModel("gemini-2.5-flash")
+MODEL = genai.GenerativeModel(settings.gemini_panel_model)
 
 
 class JDSignals(BaseModel):
@@ -57,6 +57,12 @@ class JDSignals(BaseModel):
     )
 
     ideal_candidate_summary: str = ""
+
+    # Recruiter-intent qualitative signals — used by trajectory + behavioral agents
+    company_stage: str = "unknown"          # seed | early | growth | scale | enterprise | unknown
+    ownership_weight: float = 0.5           # 0.0–1.0: how much independent ownership matters
+    leadership_weight: float = 0.5          # 0.0–1.0: IC-only vs expected to lead/mentor
+    red_flags: list[str] = Field(default_factory=list)  # resume signals that should raise concern
 
 
 # NOTE: This template contains literal JSON braces. It is rendered with
@@ -88,7 +94,13 @@ No markdown, no explanation — raw JSON only.
     "experience": <float>,
     "platform": <float>
   },
-  "ideal_candidate_summary": "<3-5 sentences describing the ideal hire: background, depth, what they've shipped, what makes them stand out>"
+  "ideal_candidate_summary": "<3-5 sentences describing the ideal hire: background, depth, what they've shipped, what makes them stand out>",
+  "company_stage": "one of: seed | early | growth | scale | enterprise | unknown",
+  "ownership_weight": <float 0.0-1.0 — how critical is independent ownership vs guided execution>,
+  "leadership_weight": <float 0.0-1.0 — 0.0 means pure IC, 1.0 means must lead teams or mentor>,
+  "red_flags": [
+    "<resume signal that should raise recruiter concern for THIS specific role>"
+  ]
 }
 
 Rules for skill_weights:
@@ -195,6 +207,10 @@ def analyze_jd(jd_text: str) -> JDSignals:
         requires_product_co=bool(data.get("requires_product_co", False)),
         dim_weights=dim_weights,
         ideal_candidate_summary=data.get("ideal_candidate_summary", ""),
+        company_stage=data.get("company_stage", "unknown"),
+        ownership_weight=float(data.get("ownership_weight", 0.5)),
+        leadership_weight=float(data.get("leadership_weight", 0.5)),
+        red_flags=[str(r).lower() for r in data.get("red_flags", [])],
     )
 
     logger.info(

@@ -137,7 +137,9 @@ def get_job_results(
             rule_composite_score=r.rule_composite_score,
             consensus_score=r.consensus_score,
             final_rank=r.final_rank,
-            executive_summary=r.executive_summary,
+            strengths=r.strengths or [],
+            risks=r.risks or [],
+            alternatives=r.alternatives or [],
             agent_reviews=r.agent_reviews,
         )
         for r in rows

@@ -10,7 +10,7 @@ for thousands of rejects isn't useful to a recruiter.
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, JSON, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
@@ -38,7 +38,9 @@ class JobResult(Base):
     # Final consensus output from the Arbitrator (Stage 3)
     consensus_score: Mapped[float] = mapped_column(Float, nullable=True)
     final_rank: Mapped[int] = mapped_column(Integer, nullable=True)
-    executive_summary: Mapped[str] = mapped_column(Text, nullable=True)
+    strengths: Mapped[list] = mapped_column(JSON, nullable=True, default=list)
+    risks: Mapped[list] = mapped_column(JSON, nullable=True, default=list)
+    alternatives: Mapped[list] = mapped_column(JSON, nullable=True, default=list)
 
     is_disqualified: Mapped[bool] = mapped_column(Boolean, default=False)
     disqualify_reason: Mapped[str] = mapped_column(String(500), nullable=True)
