@@ -7,11 +7,26 @@ Takes the 3 specialist reviews for each shortlisted candidate, resolves
 disagreements, weighs them against the JD, and produces the definitive
 consensus score + executive summary that recruiters see.
 
-Batched at ARBITRATOR_BATCH_SIZE candidates per call (not 1-per-call)
-to keep total API calls bounded — the arbitrator's job (reconcile 3
-existing scores + write a summary) doesn't need full prompt isolation
-per candidate the way the specialist passes do.
+BUG FIXES applied:
+  1. The arbitrator prompt said "Do NOT simply average the three scores"
+     but gave no guidance on how to weight disagreements — in practice
+     the model averaged anyway. Added explicit weighting guidance tied to
+     the role domain: technical roles → tech_specialist score weighs more;
+     leadership roles → trajectory score weighs more.
+  2. `alternatives` field was intended to hold candidate_ids of backup
+     candidates from the SAME BATCH — but the arbitrator prompt gave no
+     indication which batch it was operating on, so the model would
+     hallucinate IDs from outside the batch. Now the prompt lists all
+     candidate IDs up front so the model can only reference real ones.
+  3. Fallback verdict used simple average — improved to use weighted
+     average based on domain weights (tech domain → tech score weighs 50%).
+  4. Batch size was 8 but each candidate's review block averages ~300 chars
+     × 3 agents = ~900 chars per candidate — 8 candidates = ~7.2k chars
+     just for reviews, plus the system prompt. Kept at 8 but added
+     truncation for very long rationale strings (>200 chars per agent).
 """
+
+from __future__ import annotations
 
 import json
 import re
@@ -29,8 +44,6 @@ from app.logging_conf import get_logger
 logger = get_logger(__name__)
 
 _settings = get_settings()
-# Arbitrator runs far fewer calls than specialists (~batches of 8 vs full shortlist),
-# so we can afford the stronger model here — this is the highest-judgment step.
 _ARBITRATOR_MODEL = genai.GenerativeModel(_settings.gemini_arbitrator_model)
 
 ARBITRATOR_BATCH_SIZE = 8
@@ -41,34 +54,65 @@ class ArbitratorVerdict(BaseModel):
     consensus_score: float
     strengths: list[str]
     risks: list[str]
-    alternatives: list[str]   # other candidates worth considering if this one is unavailable
+    alternatives: list[str]
 
 
-_PROMPT_TEMPLATE = """You are the Lead Recruitment Arbitrator. You have three specialist panel
-reviews for each candidate below. Your job is to resolve any conflicts between their
-scores, weigh their pros/cons against the actual job description, and deliver a final
-verdict for each candidate.
+def _tech_weight(domain: str) -> tuple[float, float, float]:
+    """Returns (tech_w, trajectory_w, behavioral_w) per domain."""
+    DOMAIN_WEIGHTS = {
+        "machine_learning":   (0.55, 0.30, 0.15),
+        "data_science":       (0.50, 0.30, 0.20),
+        "data_engineering":   (0.50, 0.30, 0.20),
+        "software_engineering": (0.45, 0.35, 0.20),
+        "frontend":           (0.45, 0.30, 0.25),
+        "mobile":             (0.45, 0.30, 0.25),
+        "devops":             (0.40, 0.35, 0.25),
+        "product":            (0.25, 0.45, 0.30),
+        "design":             (0.30, 0.35, 0.35),
+        "finance":            (0.30, 0.45, 0.25),
+        "legal":              (0.20, 0.50, 0.30),
+        "operations":         (0.25, 0.45, 0.30),
+        "sales":              (0.20, 0.40, 0.40),
+        "marketing":          (0.25, 0.35, 0.40),
+        "hr":                 (0.20, 0.40, 0.40),
+    }
+    return DOMAIN_WEIGHTS.get(domain, (0.40, 0.35, 0.25))
+
+
+_PROMPT_TEMPLATE = """\
+You are the Lead Recruitment Arbitrator. You have three specialist panel
+reviews for each candidate below. Produce a final verdict for each.
 
 JOB DESCRIPTION CONTEXT:
 Role: __ROLE_TITLE__ (__SENIORITY__)
+Domain: __DOMAIN__
 Ideal candidate: __IDEAL_SUMMARY__
 
-For each candidate, you are given:
-  - Tech Specialist score + pros/cons/rationale
-  - Trajectory Specialist score + pros/cons/rationale
-  - Behavioral Specialist score + pros/cons/rationale
+SCORE WEIGHTING FOR THIS ROLE (use these weights when reconciling):
+  Tech Specialist:        __TECH_W_PCT__%
+  Trajectory Specialist:  __TRAJ_W_PCT__%
+  Behavioral Specialist:  __BEHAV_W_PCT__%
 
-Your job:
-1. Do NOT simply average the three scores. Use judgement — if the Tech Specialist
-   flags a hard disqualifying gap (e.g. zero relevant stack experience), that should
-   weigh more heavily than a strong trajectory score for a highly technical role.
-2. Produce three short lists:
-   - strengths: 2-4 bullets on why this candidate stands out (recruiter-facing, specific)
-   - risks: 1-3 bullets on genuine concerns or gaps a hiring manager should probe
-   - alternatives: candidate_ids of other candidates in this batch who could substitute
-     if this candidate declines or falls through (leave empty [] if none)
+CANDIDATES IN THIS BATCH: __BATCH_IDS__
 
-CANDIDATES AND PANEL REVIEWS:
+RULES:
+1. Start from the weighted average but DEVIATE when one specialist flags
+   a hard disqualifying gap (e.g. zero relevant stack experience for a
+   technical role, or serial job-hopping for a seniority-critical role).
+   A single critical failing should pull the score down significantly —
+   a mediocre tech score (30) with strong trajectory (90) and behavioral
+   (80) should NOT yield 67 for a technical role; tech is weighted 55%.
+2. Keep consensus_score within the range [min(three scores) - 10,
+   max(three scores) + 10] unless there's a clear reason to go outside.
+3. strengths: 2-4 recruiter-ready bullet points on why this candidate
+   stands out. Be specific — "strong embedding experience" is better
+   than "good ML background".
+4. risks: 1-3 specific concerns a hiring manager should probe. Concrete,
+   not generic ("only 2yr tenure at current role" not "may not be committed").
+5. alternatives: candidate_ids from BATCH_IDS above who could substitute
+   if this candidate declines. Leave [] if none. ONLY use IDs from BATCH_IDS.
+
+PANEL REVIEWS:
 __CANDIDATES_BLOCK__
 
 Respond ONLY with valid JSON, no markdown fences:
@@ -76,15 +120,16 @@ Respond ONLY with valid JSON, no markdown fences:
   "verdicts": [
     {
       "candidate_id": "<id>",
-      "consensus_score": <0-100>,
+      "consensus_score": <0-100 float>,
       "strengths": ["<short phrase>", "..."],
       "risks": ["<short phrase>", "..."],
-      "alternatives": ["<candidate_id>", "..."]
+      "alternatives": ["<candidate_id from batch>", "..."]
     }
   ]
 }
 
-Include ALL __N__ candidates."""
+Include ALL __N__ candidates.\
+"""
 
 
 def _format_candidate_reviews(
@@ -94,14 +139,17 @@ def _format_candidate_reviews(
 ) -> str:
     lines = [f"[{candidate_id}] {candidate_name}"]
     for agent_key, label in (
-        ("tech_specialist", "Tech Specialist"),
+        ("tech_specialist",       "Tech Specialist"),
         ("trajectory_specialist", "Trajectory Specialist"),
         ("behavioral_specialist", "Behavioral Specialist"),
     ):
         r = reviews.get(agent_key)
         if r:
+            # FIX 4: truncate long rationales to keep prompt size bounded
+            rationale = r.rationale[:200] if r.rationale else ""
             lines.append(
-                f"  {label}: score={r.score} | pros={r.pros} | cons={r.cons} | {r.rationale}"
+                f"  {label}: score={r.score:.0f} | "
+                f"pros={r.pros[:3]} | cons={r.cons[:3]} | {rationale}"
             )
     return "\n".join(lines)
 
@@ -110,27 +158,53 @@ def _build_prompt(
     jd_signals: JDSignals,
     batch: list[tuple[str, str, dict[str, AgentReviewResult]]],
 ) -> str:
+    tech_w, traj_w, behav_w = _tech_weight(jd_signals.domain)
+    batch_ids = [cid for cid, _, _ in batch]
+
     candidates_block = "\n\n".join(
         _format_candidate_reviews(cid, name, reviews) for cid, name, reviews in batch
     )
 
     prompt = _PROMPT_TEMPLATE
-    prompt = prompt.replace("__ROLE_TITLE__", jd_signals.role_title)
-    prompt = prompt.replace("__SENIORITY__", jd_signals.seniority)
-    prompt = prompt.replace("__IDEAL_SUMMARY__", jd_signals.ideal_candidate_summary[:600])
+    prompt = prompt.replace("__ROLE_TITLE__",    jd_signals.role_title)
+    prompt = prompt.replace("__SENIORITY__",      jd_signals.seniority)
+    prompt = prompt.replace("__DOMAIN__",         jd_signals.domain)
+    prompt = prompt.replace("__IDEAL_SUMMARY__",  jd_signals.ideal_candidate_summary[:400])
+    # FIX 1: explicit weights in the prompt
+    prompt = prompt.replace("__TECH_W_PCT__",     str(int(tech_w  * 100)))
+    prompt = prompt.replace("__TRAJ_W_PCT__",     str(int(traj_w  * 100)))
+    prompt = prompt.replace("__BEHAV_W_PCT__",    str(int(behav_w * 100)))
+    # FIX 2: list all batch IDs so model only references real ones
+    prompt = prompt.replace("__BATCH_IDS__",      ", ".join(batch_ids))
     prompt = prompt.replace("__CANDIDATES_BLOCK__", candidates_block)
-    prompt = prompt.replace("__N__", str(len(batch)))
+    prompt = prompt.replace("__N__",              str(len(batch)))
     return prompt
 
 
-def _fallback_verdict(candidate_id: str, reviews: dict[str, AgentReviewResult]) -> ArbitratorVerdict:
-    """Simple average fallback if the arbitrator call fails for this batch."""
-    scores = [r.score for r in reviews.values()] or [50.0]
+def _fallback_verdict(
+    candidate_id: str,
+    reviews: dict[str, AgentReviewResult],
+    domain: str = "other",
+) -> ArbitratorVerdict:
+    """FIX 3: weighted fallback instead of simple average."""
+    tech_w, traj_w, behav_w = _tech_weight(domain)
+    tech  = reviews.get("tech_specialist")
+    traj  = reviews.get("trajectory_specialist")
+    behav = reviews.get("behavioral_specialist")
+
+    if tech or traj or behav:
+        t_s = (tech.score  if tech  else 50.0) * tech_w
+        tr_s= (traj.score  if traj  else 50.0) * traj_w
+        b_s = (behav.score if behav else 50.0) * behav_w
+        score = round(t_s + tr_s + b_s, 2)
+    else:
+        score = 50.0
+
     return ArbitratorVerdict(
         candidate_id=candidate_id,
-        consensus_score=round(sum(scores) / len(scores), 2),
+        consensus_score=score,
         strengths=["Automated consensus — arbitrator unavailable"],
-        risks=["Scores are a simple average of panel; treat with lower confidence"],
+        risks=["Scores are a weighted average of panel; treat with lower confidence"],
         alternatives=[],
     )
 
@@ -139,10 +213,6 @@ def run_arbitrator(
     jd_signals: JDSignals,
     candidate_reviews: list[tuple[str, str, dict[str, AgentReviewResult]]],
 ) -> dict[str, ArbitratorVerdict]:
-    """
-    candidate_reviews: list of (candidate_id, candidate_name, {agent_key: AgentReviewResult})
-    Returns {candidate_id: ArbitratorVerdict}
-    """
     if not candidate_reviews:
         return {}
 
@@ -167,23 +237,28 @@ def run_arbitrator(
                 cid = str(item.get("candidate_id", ""))
                 if cid not in expected_ids:
                     continue
+                # FIX 2: only keep alternatives that are real batch IDs
+                safe_alts = [
+                    str(a) for a in item.get("alternatives", [])
+                    if str(a) in expected_ids and str(a) != cid
+                ]
                 batch_results[cid] = ArbitratorVerdict(
                     candidate_id=cid,
                     consensus_score=float(item.get("consensus_score", 50.0)),
                     strengths=[str(s) for s in item.get("strengths", [])],
                     risks=[str(r) for r in item.get("risks", [])],
-                    alternatives=[str(a) for a in item.get("alternatives", [])],
+                    alternatives=safe_alts,
                 )
 
             for cid, name, reviews in batch:
                 if cid not in batch_results:
-                    batch_results[cid] = _fallback_verdict(cid, reviews)
+                    batch_results[cid] = _fallback_verdict(cid, reviews, jd_signals.domain)
 
             results.update(batch_results)
 
         except Exception as e:
             logger.error("arbitrator_batch_failed", error=str(e), batch_size=len(batch))
             for cid, name, reviews in batch:
-                results[cid] = _fallback_verdict(cid, reviews)
+                results[cid] = _fallback_verdict(cid, reviews, jd_signals.domain)
 
     return results

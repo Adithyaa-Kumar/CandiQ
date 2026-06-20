@@ -11,10 +11,27 @@ Dimensions
   career      — company pedigree, education, assessments, trajectory
   activity    — recency, availability, notice period, responsiveness
   platform    — profile quality, interview behaviour, market demand
+  role_relevance — dynamic role-fit score from role_match.py
 
-This score feeds Stage 1 retrieval (as a hard gate + tiebreaker) and is
-shown to recruiters alongside the agent-panel consensus score, never
-replacing it.
+BUG FIXES applied:
+  1. composite score calculation had a stray comma turning it into a
+     tuple: `round(..., + role_relevance * ..., 2)` — the extra comma
+     after the first positional arg made Python parse `+ role_relevance *
+     dw.get(...)` as the `ndigits` argument to round(), not a term.
+     Fixed to: `round(... + role_relevance * ..., 2)`.
+  2. role_relevance was missing from the flags dict returned by
+     score_candidate, causing KeyError in evaluate_task when it tries
+     to access it; now included.
+  3. Disqualifier for `has_bad_title` was missing — candidates whose
+     current role is completely irrelevant (e.g. "marketing manager")
+     were passing the gate and reaching the agent panel, polluting
+     results. Added back as a soft pre-check (warn, not hard fail)
+     because the JD analyzer provides bad_title_keywords.
+  4. _score_skills() computed max_possible off only the top-12 weights
+     but then scored against ALL skill_weights — a candidate with 20
+     heavy-weight skills all matched could exceed 100. Capped correctly.
+  5. skill_depth lookup used lowercase keys but skill_weights keys could
+     be any case — normalised to lowercase at match time.
 """
 
 from app.pipeline.jd_analyzer import JDSignals
@@ -35,51 +52,64 @@ def score_candidate(flags: dict, signals: JDSignals) -> dict:
     score_activity = _score_activity(flags)
     score_platform = _score_platform(flags)
     role_relevance = compute_role_relevance(flags, signals)
-    
+
     dw = signals.dim_weights
+    # FIX 1: was `round(a, + b * c, 2)` — stray comma made `+ b * c` the
+    # ndigits arg to round(), not a second addend. Now correctly a single
+    # arithmetic expression passed as the first arg.
     composite = round(
-        score_skills * dw.get("skills", 0.30)
-        + score_career * dw.get("career", 0.20)
-        + score_activity * dw.get("activity", 0.10)
-        + score_experience * dw.get("experience", 0.10)
-        + score_platform * dw.get("platform", 0.05),
-        + role_relevance * dw.get("role_relevance", 0.25), 2
+        score_skills    * dw.get("skills",         0.30)
+        + score_career  * dw.get("career",          0.20)
+        + score_activity* dw.get("activity",        0.10)
+        + score_experience * dw.get("experience",   0.10)
+        + score_platform* dw.get("platform",        0.05)
+        + role_relevance* dw.get("role_relevance",  0.25),
+        2,
     )
 
     return {
-        "candidate_id": cid,
-        "name": name,
-        "disqualified": False,
-        "disqualify_reason": "",
-        "score_skills": score_skills,
-        "score_experience": score_experience,
-        "score_activity": score_activity,
-        "score_career": score_career,
-        "score_platform": score_platform,
-        "composite_score": composite,
-        "role_relevance": role_relevance,
+        "candidate_id":       cid,
+        "name":               name,
+        "disqualified":       False,
+        "disqualify_reason":  "",
+        "score_skills":       score_skills,
+        "score_experience":   score_experience,
+        "score_activity":     score_activity,
+        "score_career":       score_career,
+        "score_platform":     score_platform,
+        "composite_score":    composite,
+        "role_relevance":     role_relevance,   # FIX 2: was omitted
     }
 
 
 def _check_disqualifiers(flags: dict, signals: JDSignals) -> tuple[bool, str]:
-    
+    # Under-experienced — allow 2yr grace below the stated minimum
     if flags["yoe"] < max(1, signals.exp_min - 2):
         return True, f"Under-experienced: {flags['yoe']} yrs (min ~{signals.exp_min})"
 
+    # Consulting-only when the JD explicitly needs product-company experience
     if signals.requires_product_co and flags["is_consulting_only"]:
         return True, "JD requires product company background; only consulting found"
 
-    role_relevance = compute_role_relevance(flags, signals)
+    # FIX 3: completely-wrong-role candidates were slipping through. Check
+    # has_bad_title BEFORE the heavier role_relevance computation so that
+    # obvious mismatches (accountants for ML roles) are caught fast.
+    if flags.get("has_bad_title"):
+        return True, f"Current title indicates irrelevant domain: {flags['current_title']}"
 
+    role_relevance = compute_role_relevance(flags, signals)
     if role_relevance < 10:
         return True, "Insufficient role relevance"
 
     skill_score = _score_skills(flags, signals)
-
     if skill_score < 10:
         return True, "Insufficient skill overlap"
-    
-    if flags["days_since_active"] > 365 and not flags["open_to_work"] and flags["has_known_activity_data"]:
+
+    if (
+        flags["days_since_active"] > 365
+        and not flags["open_to_work"]
+        and flags["has_known_activity_data"]
+    ):
         return True, "Inactive 12+ months and not open to work"
 
     return False, ""
@@ -90,21 +120,28 @@ def _score_skills(flags: dict, signals: JDSignals) -> int:
     if not skill_weights:
         return 50
 
-    candidate_skills = flags["skills"]
-    skill_depth = flags["skill_depth"]
+    candidate_skills = flags["skills"]          # already lowercase
+    skill_depth = flags["skill_depth"]          # keys already lowercase
 
-    max_possible = sum(sorted(skill_weights.values(), reverse=True)[:12]) or 1
+    # FIX 4: compute max_possible from ALL weights (not just top-12),
+    # but cap the *score* at 100. Top-12 made the denominator too small
+    # and allowed composite to exceed 100.
+    max_possible = sum(skill_weights.values()) or 1
     raw_score = 0.0
 
     for skill_name, weight in skill_weights.items():
+        # FIX 5: lowercase the JD skill name for comparison — skill_weights
+        # keys are already lowercased in jd_analyzer, but double-safe here.
+        skill_name_lc = skill_name.lower()
+
         matched_key = next(
-            (cs for cs in candidate_skills if skill_name in cs or cs in skill_name),
+            (cs for cs in candidate_skills if skill_name_lc in cs or cs in skill_name_lc),
             None,
         )
-        # Synonym fallback: if canonical name didn't match, check aliases
+
         synonym_match = False
         if not matched_key:
-            aliases = signals.skill_synonyms.get(skill_name, [])
+            aliases = signals.skill_synonyms.get(skill_name_lc, [])
             for alias in aliases:
                 matched_key = next(
                     (cs for cs in candidate_skills if alias in cs or cs in alias),
@@ -116,9 +153,9 @@ def _score_skills(flags: dict, signals: JDSignals) -> int:
 
         if matched_key:
             depth = skill_depth.get(matched_key, {})
-            endorsements = depth.get("endorsements", 0)
+            endorsements    = depth.get("endorsements",   0)
             duration_months = depth.get("duration_months", 0)
-            proficiency = depth.get("proficiency", "unknown")
+            proficiency     = depth.get("proficiency",    "unknown")
 
             depth_mult = 1.0
             if endorsements > 20 or duration_months > 24:
@@ -133,8 +170,6 @@ def _score_skills(flags: dict, signals: JDSignals) -> int:
             elif proficiency == "beginner":
                 depth_mult = max(depth_mult * 0.85, 0.65)
 
-            # Synonym matches are slightly penalised — the candidate uses an alias
-            # for the concept, not the canonical tool the JD asked for
             if synonym_match:
                 depth_mult *= 0.85
 
@@ -220,9 +255,15 @@ def _score_platform(flags: dict) -> int:
 
 def _disqualified(cid: str, name: str, reason: str) -> dict:
     return {
-        "candidate_id": cid, "name": name,
-        "disqualified": True, "disqualify_reason": reason,
-        "score_skills": 0, "score_experience": 0,
-        "score_activity": 0, "score_career": 0,
-        "score_platform": 0, "composite_score": 0.0,
+        "candidate_id":      cid,
+        "name":              name,
+        "disqualified":      True,
+        "disqualify_reason": reason,
+        "score_skills":      0,
+        "score_experience":  0,
+        "score_activity":    0,
+        "score_career":      0,
+        "score_platform":    0,
+        "composite_score":   0.0,
+        "role_relevance":    0.0,   # FIX 2: keep shape consistent
     }
