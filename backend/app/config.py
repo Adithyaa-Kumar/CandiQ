@@ -56,9 +56,9 @@ class Settings(BaseSettings):
     embedding_model_name: str = "all-MiniLM-L6-v2"
 
     # ── Retrieval / shortlist tuning ──
-    shortlist_min_size: int = 5
+    shortlist_min_size: int = 10
     shortlist_max_size: int = 500
-    shortlist_percentage: float = 0.10
+    shortlist_percentage: float = 0.20
 
     @property
     def is_production(self) -> bool:

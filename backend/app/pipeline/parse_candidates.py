@@ -159,9 +159,10 @@ def build_candidate_text(c: dict) -> str:
     return " ".join(p for p in parts if p)
 
 
-def build_rich_profile(c: dict, max_chars: int = 1800) -> str:
+def build_rich_profile(c: dict, max_chars: int = 2400) -> str:
     """Richer, structured text blob for agent/semantic scoring prompts."""
     profile = c.get("profile", {})
+    sigs = c.get("redrob_signals", {})
     lines = []
 
     name = profile.get("anonymized_name", "")
@@ -185,6 +186,16 @@ def build_rich_profile(c: dict, max_chars: int = 1800) -> str:
 
     for edu in c.get("education", [])[:2]:
         lines.append(f"Edu: {edu.get('degree', '')} {edu.get('field_of_study', '')} - {edu.get('institution', '')}")
+
+    # Availability signals — agents need these for risk assessment
+    otw = "open to work" if sigs.get("open_to_work_flag") else "not actively looking"
+    notice = sigs.get("notice_period_days", "unknown")
+    rr = sigs.get("recruiter_response_rate", 0)
+    salary = sigs.get("expected_salary_range_inr_lpa", {})
+    sal_str = f"{salary.get('min', '?')}–{salary.get('max', '?')} LPA" if salary else "unknown"
+    lines.append(
+        f"Availability: {otw} | Notice: {notice}d | Response rate: {int(rr * 100)}% | Expected salary: {sal_str}"
+    )
 
     text = "\n".join(lines)
     return text[:max_chars]

@@ -46,6 +46,10 @@ class Candidate(Base):
     # Full normalised candidate dict (profile, career_history, skills, education, redrob_signals)
     profile_data: Mapped[dict] = mapped_column(JSONB, nullable=False)
 
+    intelligence_profile: Mapped[dict | None] = mapped_column(
+        JSONB,
+        nullable=True
+    )
     # Foreign key into the Qdrant collection (the point id used at upsert time)
     qdrant_point_id: Mapped[str] = mapped_column(String(64), unique=True, nullable=True)
 

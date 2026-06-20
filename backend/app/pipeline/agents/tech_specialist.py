@@ -20,12 +20,15 @@ candidates PURELY on technical depth — nothing else.
 ROLE: __ROLE_TITLE__
 KEY SKILLS REQUIRED: __SKILLS_LIST__
 IDEAL CANDIDATE PROFILE: __IDEAL_SUMMARY__
+RED FLAGS TO WATCH FOR: __RED_FLAGS__
 
 Your evaluation criteria:
 - Depth of relevant technical stack (not just keyword presence — evidence of real use)
 - Architecture and systems exposure (have they built/scaled something non-trivial?)
 - Complexity of projects described (toy projects vs. production systems)
 - Core competency match to the specific skills this role needs
+- Watch for recency-padded skills: a skill listed with no supporting career evidence in
+  job descriptions should score lower than one with explicit project context
 
 EXPLICITLY IGNORE: company prestige, career growth, tenure, soft skills, communication style.
 Those are scored by other specialists — scoring them here is out of scope.
@@ -53,16 +56,50 @@ def build_prompt(jd_signals: JDSignals, candidates: list[dict]) -> str:
     skills_list = ", ".join(
         f"{k} ({v}/10)" for k, v in sorted(jd_signals.skill_weights.items(), key=lambda x: -x[1])[:20]
     )
-    candidates_block = "\n\n".join(
-        f"[{c.get('candidate_id', '')}]\n{build_rich_profile(c)}"
-        for c in candidates
-    )
+    def _candidate_text(c):
+      profile = build_rich_profile(c)
+      intel = c.get("intelligence_profile") or {}
+      return f"""
+    [{c.get('candidate_id', '')}]
+    {profile}
 
+    === RECRUITER INTELLIGENCE PROFILE ===
+
+    Production AI Evidence Count:
+    {intel.get("production_ai_evidence", 0)}
+
+    Ownership Evidence Count:
+    {intel.get("ownership_evidence", 0)}
+
+    Scale Evidence Count:
+    {intel.get("scale_evidence", 0)}
+
+    Leadership Evidence Count:
+    {intel.get("leadership_evidence", 0)}
+
+    IR / ML Evidence:
+    {intel.get("ir_ml_evidence", [])}
+
+    Ownership Signals:
+    {intel.get("ownership_signals", [])}
+
+    Career Trajectory:
+    {intel.get("career_trajectory", "")}
+
+    Key Skills:
+    {intel.get("key_skills", [])}
+    """ 
+    candidate_blob = "\n\n".join(
+      _candidate_text(c)
+      for c in candidates
+    )
+    
     prompt = _PROMPT_TEMPLATE
     prompt = prompt.replace("__ROLE_TITLE__", jd_signals.role_title)
     prompt = prompt.replace("__SKILLS_LIST__", skills_list)
     prompt = prompt.replace("__IDEAL_SUMMARY__", jd_signals.ideal_candidate_summary[:600])
-    prompt = prompt.replace("__CANDIDATES_BLOCK__", candidates_block)
+    prompt = prompt.replace("__RED_FLAGS__", ", ".join(jd_signals.red_flags) or "none specified")
+    prompt = prompt.replace("__CANDIDATES_BLOCK__", candidate_blob)
     prompt = prompt.replace("__N__", str(len(candidates)))
     return prompt
 

@@ -203,7 +203,7 @@ def run_retrieval_filter(
         s = (sparse_scores[i] / max_sparse) * 100
         # Best-of, not average — a candidate strong on either signal
         # shouldn't be punished for being weak on the other.
-        return round(max(d, s), 2)
+        return float(round(max(d, s), 2))
 
     union_sorted = sorted(union_indices, key=_combined_score, reverse=True)
     final_indices = union_sorted[:shortlist_size]

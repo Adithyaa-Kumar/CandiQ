@@ -38,12 +38,12 @@ def score_candidate(flags: dict, signals: JDSignals) -> dict:
     
     dw = signals.dim_weights
     composite = round(
-        score_skills * dw.get("skills", 0.40)
-        + score_career * dw.get("career", 0.25)
-        + score_activity * dw.get("activity", 0.20)
+        score_skills * dw.get("skills", 0.30)
+        + score_career * dw.get("career", 0.20)
+        + score_activity * dw.get("activity", 0.10)
         + score_experience * dw.get("experience", 0.10)
         + score_platform * dw.get("platform", 0.05),
-        2,
+        + role_relevance * dw.get("role_relevance", 0.25), 2
     )
 
     return {
@@ -76,7 +76,7 @@ def _check_disqualifiers(flags: dict, signals: JDSignals) -> tuple[bool, str]:
 
     skill_score = _score_skills(flags, signals)
 
-    if skill_score < 15:
+    if skill_score < 10:
         return True, "Insufficient skill overlap"
     
     if flags["days_since_active"] > 365 and not flags["open_to_work"] and flags["has_known_activity_data"]:
@@ -101,6 +101,19 @@ def _score_skills(flags: dict, signals: JDSignals) -> int:
             (cs for cs in candidate_skills if skill_name in cs or cs in skill_name),
             None,
         )
+        # Synonym fallback: if canonical name didn't match, check aliases
+        synonym_match = False
+        if not matched_key:
+            aliases = signals.skill_synonyms.get(skill_name, [])
+            for alias in aliases:
+                matched_key = next(
+                    (cs for cs in candidate_skills if alias in cs or cs in alias),
+                    None,
+                )
+                if matched_key:
+                    synonym_match = True
+                    break
+
         if matched_key:
             depth = skill_depth.get(matched_key, {})
             endorsements = depth.get("endorsements", 0)
@@ -119,6 +132,11 @@ def _score_skills(flags: dict, signals: JDSignals) -> int:
                 depth_mult = min(depth_mult * 1.1, 1.35)
             elif proficiency == "beginner":
                 depth_mult = max(depth_mult * 0.85, 0.65)
+
+            # Synonym matches are slightly penalised — the candidate uses an alias
+            # for the concept, not the canonical tool the JD asked for
+            if synonym_match:
+                depth_mult *= 0.85
 
             raw_score += weight * depth_mult
 

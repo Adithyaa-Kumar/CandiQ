@@ -17,6 +17,9 @@ from app.pipeline.embed import embed_texts_batch
 from app.pipeline.parse_candidates import build_candidate_text
 from app.vector_store.qdrant_client import upsert_candidate_vectors_batch
 from app.db.models.candidate_pool import CandidatePool, PoolStatus
+from app.pipeline.intelligence_profile import (
+    build_candidate_intelligence_profile
+)
 
 logger = get_logger(__name__)
 
@@ -68,6 +71,7 @@ def ingest_candidates_task(self, owner_id: str, pool_id: str, candidates: list[d
                     years_of_experience=profile.get("years_of_experience", 0),
                     profile_data=c,
                     qdrant_point_id=point_id,
+                    intelligence_profile=build_candidate_intelligence_profile(c),
                 )
                 db.add(candidate_row)
 

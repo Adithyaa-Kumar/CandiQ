@@ -64,6 +64,10 @@ class JDSignals(BaseModel):
     leadership_weight: float = 0.5          # 0.0–1.0: IC-only vs expected to lead/mentor
     red_flags: list[str] = Field(default_factory=list)  # resume signals that should raise concern
 
+    # Synonym map: canonical skill → list of resume aliases that should match it
+    # e.g. {"information retrieval": ["elasticsearch", "opensearch", "haystack"]}
+    skill_synonyms: dict[str, list[str]] = Field(default_factory=dict)
+
 
 # NOTE: This template contains literal JSON braces. It is rendered with
 # str.replace("__JD_TEXT__", jd_text) — NEVER with str.format() or an
@@ -100,7 +104,10 @@ No markdown, no explanation — raw JSON only.
   "leadership_weight": <float 0.0-1.0 — 0.0 means pure IC, 1.0 means must lead teams or mentor>,
   "red_flags": [
     "<resume signal that should raise recruiter concern for THIS specific role>"
-  ]
+  ],
+  "skill_synonyms": {
+    "<canonical skill from skill_weights>": ["<resume alias 1>", "<resume alias 2>"]
+  }
 }
 
 Rules for skill_weights:
@@ -110,6 +117,13 @@ Rules for skill_weights:
 - Weight 4-6: nice-to-have, adds score but absence doesn't disqualify.
 - Weight 1-3: tangential, minor positive signal.
 - Use the exact canonical name (e.g. "PyTorch" not "pytorch", "React" not "ReactJS").
+
+Rules for skill_synonyms:
+- For each skill in skill_weights, list common resume aliases a candidate might use instead.
+- Focus on skills where terminology varies widely (e.g. "Information Retrieval" → ["Elasticsearch", "OpenSearch", "Haystack", "Solr", "Lucene"]).
+- Include tool names that implement the concept (e.g. "Vector Databases" → ["Pinecone", "Qdrant", "Weaviate", "Milvus", "FAISS", "ChromaDB"]).
+- Leave the list empty [] for skills with no common aliases (e.g. "PyTorch" is unambiguous).
+- Keep aliases lowercase.
 
 Rules for dim_weights:
 - Must sum to exactly 1.0.
@@ -211,6 +225,10 @@ def analyze_jd(jd_text: str) -> JDSignals:
         ownership_weight=float(data.get("ownership_weight", 0.5)),
         leadership_weight=float(data.get("leadership_weight", 0.5)),
         red_flags=[str(r).lower() for r in data.get("red_flags", [])],
+        skill_synonyms={
+            k.lower(): [s.lower() for s in v]
+            for k, v in data.get("skill_synonyms", {}).items()
+        },
     )
 
     logger.info(

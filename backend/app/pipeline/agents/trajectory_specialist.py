@@ -57,9 +57,34 @@ Include ALL __N__ candidates."""
 
 
 def build_prompt(jd_signals: JDSignals, candidates: list[dict]) -> str:
-    candidates_block = "\n\n".join(
-        f"[{c.get('candidate_id', '')}]\n{build_rich_profile(c)}"
-        for c in candidates
+    def _candidate_text(c):
+      profile = build_rich_profile(c)
+
+      intel = c.get("intelligence_profile") or {}
+
+      return f"""
+    [{c.get('candidate_id', '')}]
+
+    {profile}
+
+    === INTELLIGENCE PROFILE ===
+
+    IR/ML Evidence:
+    {intel.get("ir_ml_evidence", [])}
+
+    Ownership Signals:
+    {intel.get("ownership_signals", [])}
+
+    Career Trajectory:
+    {intel.get("career_trajectory", "")}
+
+    Key Skills:
+    {intel.get("key_skills", [])}
+    """
+
+    candidate_blob = "\n\n".join(
+      _candidate_text(c)
+      for c in candidates
     )
 
     prompt = _PROMPT_TEMPLATE
@@ -70,7 +95,7 @@ def build_prompt(jd_signals: JDSignals, candidates: list[dict]) -> str:
     prompt = prompt.replace("__OWNERSHIP_WEIGHT__", str(round(jd_signals.ownership_weight, 2)))
     prompt = prompt.replace("__LEADERSHIP_WEIGHT__", str(round(jd_signals.leadership_weight, 2)))
     prompt = prompt.replace("__RED_FLAGS__", ", ".join(jd_signals.red_flags) or "none specified")
-    prompt = prompt.replace("__CANDIDATES_BLOCK__", candidates_block)
+    prompt = prompt.replace("__CANDIDATES_BLOCK__", candidate_blob)
     prompt = prompt.replace("__N__", str(len(candidates)))
     return prompt
 

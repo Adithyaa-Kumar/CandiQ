@@ -14,7 +14,7 @@ GET /jobs/{id} can report live status to a polling frontend.
 
 import uuid
 from datetime import datetime, timezone
-
+from celery.exceptions import Retry
 from app.celery_app import celery_app
 from app.db.models.agent_review import AgentReview, AgentType
 from app.db.models.candidate import Candidate
@@ -116,7 +116,27 @@ def evaluate_job_task(self, job_id: str) -> dict:
             )
             return {"error": "no candidates"}
 
-        candidate_dicts = [row.profile_data for row in candidate_rows]
+        candidate_dicts = []
+
+        for row in candidate_rows:
+            candidate = dict(row.profile_data)
+
+            candidate["intelligence_profile"] = (
+                row.intelligence_profile
+            )
+
+            candidate_dicts.append(candidate)
+        
+        logger.info(
+            "candidate_intelligence_profiles_loaded",
+            count=len(candidate_dicts),
+            with_profiles=sum(
+                1
+                for c in candidate_dicts
+                if c.get("intelligence_profile")
+            ),
+        )
+        
         # Map external candidate_id (used throughout the pipeline) -> DB row
         candidate_by_ext_id = {
             row.profile_data.get("candidate_id"): row for row in candidate_rows
@@ -204,15 +224,29 @@ def evaluate_job_task(self, job_id: str) -> dict:
                 retrieval_score=retrieval_score,
                 retrieval_method=retrieval_method,
                 rule_composite_score=rule_score["composite_score"],
-                consensus_score=verdict.consensus_score if verdict else None,
+                consensus_score=(
+                    float(verdict.consensus_score)
+                    if verdict and verdict.consensus_score is not None
+                    else None
+                ),
                 strengths=verdict.strengths if verdict else [],
                 risks=verdict.risks if verdict else [],
                 alternatives=verdict.alternatives if verdict else [],
                 is_disqualified=False,
             )
             db.add(job_result)
-            db.flush()  # get job_result.id before adding child agent_reviews
-
+            
+            logger.info(
+                "saving_candidate",
+                candidate=flags["name"],
+                retrieval_type=type(retrieval_score).__name__,
+                consensus_type=(
+                    type(verdict.consensus_score).__name__
+                    if verdict else None
+                ),
+            )
+            db.flush()  # get job_result.id before adding child agent reviews
+            
             for agent_key, review in reviews.items():
                 if not review:
                     continue
@@ -256,6 +290,7 @@ def evaluate_job_task(self, job_id: str) -> dict:
             progress_pct=100,
             completed_at=datetime.now(timezone.utc),
             status_message="Evaluation complete.",
+            error_message=None,
         )
 
         logger.info(
@@ -270,7 +305,9 @@ def evaluate_job_task(self, job_id: str) -> dict:
             "disqualified": len(disqualified),
             "total": total_candidates,
         }
-
+    except Retry:
+        raise
+    
     except Exception as e:
         db.rollback()
         logger.error("evaluate_job.failed", job_id=job_id, error=str(e))
