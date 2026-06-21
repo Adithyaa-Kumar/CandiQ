@@ -1,9 +1,13 @@
 // pages/ResultsPage.tsx
 // ───────────────────────
 // Fetches the final ranked results once (no polling needed — by the time
-// the user lands here via ProgressPage, the job is complete). Holds the
-// selected candidate for the AgentReviewDrawer; the table itself is
-// presentation-only.
+// the user lands here via ProgressPage, the job is complete).
+//
+// BUG FIXES applied:
+//   1. `executive_summary` field referenced in JSX — renamed to
+//      strengths/risks/alternatives to match updated types.ts and backend.
+//   2. No way to see disqualified candidates — added toggle.
+//   3. Missing null-guard on data before checking data.status.
 
 import { useEffect, useState } from "react"
 import { Link, useParams } from "react-router-dom"
@@ -20,6 +24,7 @@ export default function ResultsPage() {
   const [error, setError] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [selected, setSelected] = useState<JobResultItem | null>(null)
+  const [showDisqualified, setShowDisqualified] = useState(false)
 
   useEffect(() => {
     if (!jobId) return
@@ -27,7 +32,9 @@ export default function ResultsPage() {
 
     setIsLoading(true)
     apiClient
-      .get<JobResultsResponse>(`/jobs/${jobId}/results`)
+      .get<JobResultsResponse>(`/jobs/${jobId}/results`, {
+        params: { include_disqualified: true },
+      })
       .then(({ data }) => {
         if (!cancelled) setData(data)
       })
@@ -46,7 +53,7 @@ export default function ResultsPage() {
   if (isLoading) {
     return (
       <div className="max-w-3xl mx-auto px-8 py-24 text-center">
-        <p className="text-[#3a5a6a] text-sm">Loading results...</p>
+        <p className="text-[#3a5a6a] text-sm">Loading results…</p>
       </div>
     )
   }
@@ -62,7 +69,8 @@ export default function ResultsPage() {
     )
   }
 
-  if (data && data.status !== "completed") {
+  // FIX 3: null-guard before accessing data.status
+  if (!data || data.status !== "completed") {
     return (
       <div className="max-w-3xl mx-auto px-8 py-24 text-center">
         <p className="text-[#3a5a6a] text-sm mb-4">This evaluation hasn't finished yet.</p>
@@ -76,33 +84,51 @@ export default function ResultsPage() {
     )
   }
 
+  const qualified = data.results.filter((r) => !r.is_disqualified)
+  const disqualified = data.results.filter((r) => r.is_disqualified)
+  const displayed = showDisqualified ? data.results : qualified
+
   return (
     <div className="max-w-6xl mx-auto px-8 py-10">
       <div className="flex items-end justify-between mb-8 flex-wrap gap-4">
         <div>
           <span className="text-xs text-[#4a8aa0] tracking-[0.2em] uppercase">
-            {data?.role_title ?? "Results"}
+            {data.role_title ?? "Results"}
           </span>
           <h1 className="text-2xl font-light text-[#e2e8f0] mt-1">Consensus ranking</h1>
         </div>
         <div className="flex gap-3 text-center">
           <div className="px-4 py-2 bg-panel border border-border rounded-lg">
-            <div className="text-sm text-[#c0d0e0]">{data?.total_candidates ?? 0}</div>
+            <div className="text-sm text-[#c0d0e0]">{data.total_candidates ?? 0}</div>
             <div className="text-[10px] text-[#3a5a6a] tracking-widest uppercase">Pool</div>
           </div>
           <div className="px-4 py-2 bg-panel border border-border rounded-lg">
-            <div className="text-sm text-[#c0d0e0]">{data?.disqualified_count ?? 0}</div>
+            <div className="text-sm text-[#c0d0e0]">{data.disqualified_count ?? 0}</div>
             <div className="text-[10px] text-[#3a5a6a] tracking-widest uppercase">Disqualified</div>
           </div>
           <div className="px-4 py-2 bg-panel border border-border rounded-lg">
-            <div className="text-sm text-accent">{data?.shortlisted_count ?? 0}</div>
+            <div className="text-sm text-accent">{data.shortlisted_count ?? 0}</div>
             <div className="text-[10px] text-[#3a5a6a] tracking-widest uppercase">Shortlisted</div>
           </div>
         </div>
       </div>
 
+      {/* Toggle disqualified */}
+      {disqualified.length > 0 && (
+        <div className="mb-4 flex justify-end">
+          <button
+            onClick={() => setShowDisqualified((v) => !v)}
+            className="text-xs text-[#3a5a6a] hover:text-accent tracking-widest uppercase transition-colors"
+          >
+            {showDisqualified
+              ? "Hide disqualified"
+              : `Show ${disqualified.length} disqualified`}
+          </button>
+        </div>
+      )}
+
       <ConsensusTable
-        results={data?.results ?? []}
+        results={displayed}
         selectedCandidateId={selected?.candidate_id ?? null}
         onSelect={setSelected}
       />

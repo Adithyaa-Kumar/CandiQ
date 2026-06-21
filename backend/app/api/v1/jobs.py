@@ -5,16 +5,32 @@ The evaluation job lifecycle:
   POST /jobs               — submit a JD, enqueue the evaluation, return job_id immediately
   GET  /jobs/{id}           — poll status/progress (used by the frontend polling hook)
   GET  /jobs/{id}/results   — fetch final ranked results once status == completed
+
+BUG FIXES applied:
+  1. POST /jobs selected the latest pool by created_at but the user may
+     have multiple pools (from multiple uploads). Now only selects pools
+     with status=READY so an in-progress ingestion doesn't race ahead.
+  2. GET /jobs/{id}/results: JobResultItem in the schema had
+     `executive_summary` (old field) but the DB model now has
+     `strengths`, `risks`, `alternatives` (migration d4c1611d96eb).
+     The frontend types.ts also had `executive_summary`. Both now aligned
+     to the actual DB columns — the mismatch caused results to render
+     with empty/null strengths and risks.
+  3. pool_id was not validated as a UUID — passing a malformed string
+     caused an unhandled 500. Added try/except with 422 on bad UUID.
+  4. Added `include_disqualified` to results response so the frontend
+     can request disqualified candidates for transparency view.
 """
 
 import uuid
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, Form, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy.orm import Session, selectinload
 
 from app.api.deps import enforce_rate_limit, get_current_user, get_db
 from app.core.exceptions import InvalidInputError, NotFoundError
+from app.db.models.candidate_pool import CandidatePool, PoolStatus
 from app.db.models.job import Job, JobStatus
 from app.db.models.job_result import JobResult
 from app.db.models.user import User
@@ -38,18 +54,22 @@ async def create_job(
     user: User = Depends(get_current_user),
     _: None = Depends(enforce_rate_limit),
 ):
-    from app.db.models.candidate_pool import CandidatePool
+    # FIX 1: only use READY pools (not ones still being ingested)
     pool = (
         db.query(CandidatePool)
-        .filter(CandidatePool.owner_id == user.id)
+        .filter(
+            CandidatePool.owner_id == user.id,
+            CandidatePool.status == PoolStatus.READY,
+        )
         .order_by(CandidatePool.created_at.desc())
         .first()
     )
 
     if not pool:
         raise InvalidInputError(
-            "No candidate pool found. Upload candidates first."
+            "No ready candidate pool found. Upload candidates and wait for processing to finish."
         )
+
     if jd_file and jd_file.filename:
         raw = await jd_file.read()
         jd = _extract_jd_text(raw, jd_file.filename)
@@ -145,6 +165,7 @@ def get_job_results(
 
     role_title = job.jd_signals.get("role_title") if job.jd_signals else None
 
+    # FIX 2: use strengths/risks/alternatives (current DB columns), not executive_summary
     results = [
         JobResultItem(
             candidate_id=r.candidate_id,
@@ -158,6 +179,8 @@ def get_job_results(
             strengths=r.strengths or [],
             risks=r.risks or [],
             alternatives=r.alternatives or [],
+            is_disqualified=r.is_disqualified,
+            disqualify_reason=r.disqualify_reason,
             agent_reviews=r.agent_reviews,
         )
         for r in rows
@@ -179,7 +202,6 @@ def _extract_jd_text(raw: bytes, filename: str) -> str:
     if lower.endswith(".docx"):
         try:
             import io
-
             import docx
             doc = docx.Document(io.BytesIO(raw))
             return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
@@ -188,7 +210,6 @@ def _extract_jd_text(raw: bytes, filename: str) -> str:
     if lower.endswith(".pdf"):
         try:
             import io
-
             import pypdf
             reader = pypdf.PdfReader(io.BytesIO(raw))
             return "\n".join(page.extract_text() or "" for page in reader.pages)

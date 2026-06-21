@@ -1,12 +1,16 @@
 """
 schemas/job.py
 ───────────────
-Request/response models for the evaluation job lifecycle:
-create → poll status → fetch results.
+Request/response models for the evaluation job lifecycle.
+
+BUG FIX: JobResultItem previously had `executive_summary` (old field name)
+instead of `strengths`, `risks`, `alternatives` — mismatched the DB model
+since migration d4c1611d96eb, causing the frontend to render blank results.
 """
 
 import uuid
 from datetime import datetime
+from typing import Optional
 
 from pydantic import BaseModel, Field
 
@@ -15,7 +19,6 @@ from app.schemas.agent_review import AgentReviewResponse
 
 
 class JobCreateResponse(BaseModel):
-    """Returned immediately on POST /jobs — the task runs in the background."""
     job_id: uuid.UUID
     status: JobStatus
     message: str
@@ -57,9 +60,12 @@ class JobResultItem(BaseModel):
     rule_composite_score: float | None
     consensus_score: float | None
     final_rank: int | None
+    # FIX: was `executive_summary: str | None` — renamed columns since migration d4c1611d96eb
     strengths: list[str] = Field(default_factory=list)
     risks: list[str] = Field(default_factory=list)
     alternatives: list[str] = Field(default_factory=list)
+    is_disqualified: bool = False
+    disqualify_reason: Optional[str] = None
     agent_reviews: list[AgentReviewResponse] = Field(default_factory=list)
 
     model_config = {"from_attributes": True}

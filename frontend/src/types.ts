@@ -1,8 +1,6 @@
 // types.ts
 // ─────────
-// Mirrors app/schemas/*.py exactly. Keep these in sync with the backend —
-// any drift here is a silent bug (a field renamed on one side and not
-// the other won't show up until the response actually arrives wrong).
+// Mirrors app/schemas/*.py exactly. Keep these in sync with the backend.
 
 // ── Auth ──────────────────────────────────────────────────────────────────
 
@@ -35,6 +33,13 @@ export interface CandidateIngestResponse {
   task_id: string
   candidates_received: number
   message: string
+  pool_id: string | null  // added: used to poll pool-status
+}
+
+export interface PoolStatusResponse {
+  status: "none" | "processing" | "ready" | "failed"
+  pool_id: string | null
+  candidate_count: number
 }
 
 // ── Jobs ──────────────────────────────────────────────────────────────────
@@ -101,7 +106,12 @@ export interface JobResultItem {
   rule_composite_score: number | null
   consensus_score: number | null
   final_rank: number | null
-  executive_summary: string | null
+  // FIX: was `executive_summary: string | null` — DB columns renamed in migration d4c1611d96eb
+  strengths: string[]
+  risks: string[]
+  alternatives: string[]
+  is_disqualified: boolean
+  disqualify_reason: string | null
   agent_reviews: AgentReview[]
 }
 

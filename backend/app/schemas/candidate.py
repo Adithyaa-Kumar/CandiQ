@@ -2,10 +2,14 @@
 schemas/candidate.py
 ─────────────────────
 Request/response models for candidate ingestion.
+
+CHANGE: Added pool_id to CandidateIngestResponse so the frontend
+knows which pool was created and can poll its status specifically.
 """
 
 import uuid
 from datetime import datetime
+from typing import Optional
 
 from pydantic import BaseModel
 
@@ -26,3 +30,4 @@ class CandidateIngestResponse(BaseModel):
     task_id: str
     candidates_received: int
     message: str
+    pool_id: Optional[str] = None  # added: lets frontend poll pool status

@@ -1,24 +1,36 @@
 // pages/UploadPage.tsx
 //
-// Two-step flow matching the actual backend contract:
-//   1. POST /candidates/upload — ingest the candidate pool (async, returns task_id)
-//   2. POST /jobs — submit the JD, which evaluates against the recruiter's
-//      FULL existing candidate pool (not just what was just uploaded)
+// Two-step flow:
+//   1. POST /candidates/upload — ingest candidate pool (async)
+//   2. Poll GET /candidates/pool-status until status === "ready"
+//   3. POST /jobs — submit JD for evaluation
 //
-// We wait briefly after step 1 before allowing step 2, since candidate
-// embedding runs in the background — submitting a JD instantly after
-// uploading candidates could race ahead of ingestion finishing. A short
-// fixed delay is a pragmatic MVP choice; a more thorough version would
-// poll the ingest task status before unlocking the Evaluate button.
+// BUG FIX: original used a hardcoded setTimeout(25000) to "wait" for
+// ingestion to finish before unlocking the Evaluate button. This broke
+// in two ways:
+//   a) 25s is arbitrary — small pools finish in 3s, large ones take 90s+
+//   b) The button unlocked regardless of whether ingestion actually succeeded
+//
+// Now polls GET /candidates/pool-status on a 3s interval until
+// status === "ready" or "failed", then enables/disables the button
+// accordingly. Accurate and no magic numbers.
 
-import { useRef, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { useNavigate } from "react-router-dom"
 
 import { apiClient, extractErrorMessage } from "@/api/client"
 import { UploadZone } from "@/components/InputPanel"
-import type { CandidateIngestResponse, JobCreateResponse } from "@/types"
+import type { CandidateIngestResponse, JobCreateResponse, PoolStatusResponse } from "@/types"
 
-type Step = "idle" | "uploading_candidates" | "ready_to_evaluate" | "submitting_job"
+type Step =
+  | "idle"
+  | "uploading_candidates"
+  | "waiting_for_pool"
+  | "ready_to_evaluate"
+  | "pool_failed"
+  | "submitting_job"
+
+const POLL_INTERVAL_MS = 3_000
 
 export default function UploadPage() {
   const navigate = useNavigate()
@@ -27,18 +39,57 @@ export default function UploadPage() {
   const jdTextRef = useRef("")
   const candFileRef = useRef<File | null>(null)
   const candTextRef = useRef("")
+  const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const cancelledRef = useRef(false)
 
   const [step, setStep] = useState<Step>("idle")
   const [error, setError] = useState<string | null>(null)
   const [candidatesReceived, setCandidatesReceived] = useState<number | null>(null)
+  const [poolCandidateCount, setPoolCandidateCount] = useState<number | null>(null)
   const [, forceRender] = useState(0)
 
   const hasJd = !!(jdFileRef.current || jdTextRef.current.trim())
   const hasCandidates = !!(candFileRef.current || candTextRef.current.trim())
 
+  // Clean up poll timer on unmount
+  useEffect(() => {
+    cancelledRef.current = false
+    return () => {
+      cancelledRef.current = true
+      if (pollTimerRef.current) clearTimeout(pollTimerRef.current)
+    }
+  }, [])
+
+  const startPollingPool = () => {
+    const poll = async () => {
+      if (cancelledRef.current) return
+      try {
+        const { data } = await apiClient.get<PoolStatusResponse>("/candidates/pool-status")
+        if (cancelledRef.current) return
+
+        if (data.status === "ready") {
+          setPoolCandidateCount(data.candidate_count)
+          setStep("ready_to_evaluate")
+        } else if (data.status === "failed") {
+          setStep("pool_failed")
+          setError("Candidate processing failed. Please try uploading again.")
+        } else {
+          // still processing — poll again
+          pollTimerRef.current = setTimeout(poll, POLL_INTERVAL_MS)
+        }
+      } catch (e) {
+        if (cancelledRef.current) return
+        // Don't abort on transient network errors — keep polling
+        pollTimerRef.current = setTimeout(poll, POLL_INTERVAL_MS)
+      }
+    }
+    poll()
+  }
+
   const handleUploadCandidates = async () => {
     setError(null)
     setStep("uploading_candidates")
+    if (pollTimerRef.current) clearTimeout(pollTimerRef.current)
 
     try {
       const form = new FormData()
@@ -53,9 +104,8 @@ export default function UploadPage() {
       })
 
       setCandidatesReceived(data.candidates_received)
-      setTimeout(() => {
-      setStep("ready_to_evaluate")
-      }, 25000)
+      setStep("waiting_for_pool")
+      startPollingPool()
     } catch (e) {
       setError(extractErrorMessage(e))
       setStep("idle")
@@ -85,6 +135,24 @@ export default function UploadPage() {
     }
   }
 
+  const statusLabel = () => {
+    if (step === "uploading_candidates") return "Uploading…"
+    if (step === "waiting_for_pool") return "Indexing candidates…"
+    if (step === "ready_to_evaluate" && poolCandidateCount !== null)
+      return `✓ ${poolCandidateCount} candidates indexed`
+    if (step === "ready_to_evaluate" && candidatesReceived !== null)
+      return `✓ ${candidatesReceived} candidates queued`
+    return null
+  }
+
+  const uploadButtonLabel = () => {
+    if (step === "uploading_candidates") return "Uploading…"
+    if (step === "waiting_for_pool") return "Indexing…"
+    return "Upload Candidates"
+  }
+
+  const uploadBusy = step === "uploading_candidates" || step === "waiting_for_pool"
+
   return (
     <div className="max-w-4xl mx-auto px-8 py-12">
       <div className="mb-12 text-center">
@@ -108,10 +176,8 @@ export default function UploadPage() {
       <div className="bg-panel border border-border rounded-lg p-5 mb-6">
         <div className="flex items-center justify-between mb-1">
           <span className="text-xs text-accent tracking-widest uppercase">Step 1</span>
-          {step !== "idle" && candidatesReceived !== null && (
-            <span className="text-xs text-accent">
-              ✓ {candidatesReceived} candidates queued for processing
-            </span>
+          {statusLabel() && (
+            <span className="text-xs text-accent">{statusLabel()}</span>
           )}
         </div>
         <UploadZone
@@ -129,16 +195,24 @@ export default function UploadPage() {
             forceRender((n) => n + 1)
           }}
         />
+
+        {/* Inline indexing progress bar */}
+        {step === "waiting_for_pool" && (
+          <div className="mt-3 h-1 bg-border rounded overflow-hidden">
+            <div className="h-full bg-accent animate-pulse w-full" />
+          </div>
+        )}
+
         <button
           onClick={handleUploadCandidates}
-          disabled={!hasCandidates || step === "uploading_candidates"}
+          disabled={!hasCandidates || uploadBusy}
           className={`mt-4 px-6 py-2 text-xs tracking-widest uppercase transition-all rounded ${
-            hasCandidates && step !== "uploading_candidates"
+            hasCandidates && !uploadBusy
               ? "bg-accent text-bg font-semibold hover:bg-[#00eabb] cursor-pointer"
               : "bg-bg text-[#2a3a4a] border border-border cursor-not-allowed"
           }`}
         >
-          {step === "uploading_candidates" ? "Processing Candidates..." : "Upload Candidates"}
+          {uploadButtonLabel()}
         </button>
       </div>
 
@@ -152,7 +226,7 @@ export default function UploadPage() {
         <UploadZone
           label="Job Description"
           accept=".txt,.pdf,.docx"
-          textPlaceholder="Paste the full job description here — title, responsibilities, requirements, anything..."
+          textPlaceholder="Paste the full job description here — title, responsibilities, requirements, anything…"
           onFile={(f) => {
             jdFileRef.current = f
             jdTextRef.current = ""
@@ -176,11 +250,17 @@ export default function UploadPage() {
               : "bg-bg text-[#2a3a4a] border border-border cursor-not-allowed"
           }`}
         >
-          {step === "submitting_job" ? "Submitting..." : "Evaluate Candidates"}
+          {step === "submitting_job" ? "Submitting…" : "Evaluate Candidates"}
         </button>
-        {step !== "ready_to_evaluate" && step !== "submitting_job" && (
+        {step === "waiting_for_pool" && (
           <p className="text-[#2a3a4a] text-xs mt-3">
-            Candidates are being embedded and indexed. Evaluation will unlock automatically.
+            Embedding and indexing candidates — this usually takes 10–60 seconds.
+            Evaluate will unlock automatically when ready.
+          </p>
+        )}
+        {step === "pool_failed" && (
+          <p className="text-red-400 text-xs mt-3">
+            Indexing failed. Try uploading again or check the backend logs.
           </p>
         )}
       </div>

@@ -221,9 +221,9 @@ def evaluate_job_task(self, job_id: str) -> dict:
                 candidate_id=candidate_row.id,
                 candidate_name=flags["name"],
                 current_title=flags["current_title"],
-                retrieval_score=retrieval_score,
+                retrieval_score=float(retrieval_score),
                 retrieval_method=retrieval_method,
-                rule_composite_score=rule_score["composite_score"],
+                rule_composite_score=float(rule_score["composite_score"]),
                 consensus_score=(
                     float(verdict.consensus_score)
                     if verdict and verdict.consensus_score is not None

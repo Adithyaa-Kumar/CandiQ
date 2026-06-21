@@ -1,9 +1,12 @@
 // components/AgentReviewDrawer.tsx
 // ───────────────────────────────────
-// Slide-over panel showing the arbitrator's executive summary plus each
-// specialist's full pros/cons/rationale for one candidate. This is the
-// "show your work" surface — the whole reason the multi-agent design is
-// worth it over a single black-box score.
+// Slide-over panel showing the arbitrator's verdict (strengths/risks)
+// plus each specialist's full pros/cons/rationale for one candidate.
+//
+// BUG FIX: was referencing `candidate.executive_summary` (old field),
+// which no longer exists on JobResultItem since migration d4c1611d96eb
+// replaced it with `strengths`, `risks`, `alternatives`. Now renders
+// those three arrays instead, which is richer and more actionable.
 
 import type { AgentReview, AgentType, JobResultItem } from "@/types"
 
@@ -80,6 +83,9 @@ interface AgentReviewDrawerProps {
 export function AgentReviewDrawer({ candidate, onClose }: AgentReviewDrawerProps) {
   if (!candidate) return null
 
+  const hasVerdict =
+    (candidate.strengths?.length ?? 0) > 0 || (candidate.risks?.length ?? 0) > 0
+
   return (
     <div className="fixed inset-0 z-50 flex justify-end">
       <div className="absolute inset-0 bg-black/60" onClick={onClose} />
@@ -91,6 +97,11 @@ export function AgentReviewDrawer({ candidate, onClose }: AgentReviewDrawerProps
             {candidate.current_title && (
               <div className="text-[#3a5a6a] text-xs mt-0.5">{candidate.current_title}</div>
             )}
+            {candidate.is_disqualified && (
+              <div className="mt-1 text-[10px] text-red-400 tracking-widest uppercase">
+                Disqualified — {candidate.disqualify_reason}
+              </div>
+            )}
           </div>
           <button
             onClick={onClose}
@@ -101,48 +112,77 @@ export function AgentReviewDrawer({ candidate, onClose }: AgentReviewDrawerProps
         </div>
 
         <div className="px-6 py-5">
-          <div className="flex items-center gap-6 mb-6">
-            <div>
-              <div className="text-[10px] text-[#4a8aa0] tracking-widest uppercase mb-1">
-                Final rank
+          {!candidate.is_disqualified && (
+            <div className="flex items-center gap-6 mb-6">
+              <div>
+                <div className="text-[10px] text-[#4a8aa0] tracking-widest uppercase mb-1">
+                  Final rank
+                </div>
+                <div className="text-2xl text-[#c0d0e0] tabular-nums">
+                  {candidate.final_rank ?? "—"}
+                </div>
               </div>
-              <div className="text-2xl text-[#c0d0e0] tabular-nums">
-                {candidate.final_rank ?? "—"}
+              <div>
+                <div className="text-[10px] text-[#4a8aa0] tracking-widest uppercase mb-1">
+                  Consensus score
+                </div>
+                <div
+                  className={`text-2xl tabular-nums ${
+                    candidate.consensus_score ? scoreColor(candidate.consensus_score) : "text-[#3a5a6a]"
+                  }`}
+                >
+                  {candidate.consensus_score?.toFixed(1) ?? "—"}
+                </div>
               </div>
-            </div>
-            <div>
-              <div className="text-[10px] text-[#4a8aa0] tracking-widest uppercase mb-1">
-                Consensus score
-              </div>
-              <div
-                className={`text-2xl tabular-nums ${
-                  candidate.consensus_score ? scoreColor(candidate.consensus_score) : "text-[#3a5a6a]"
-                }`}
-              >
-                {candidate.consensus_score?.toFixed(1) ?? "—"}
-              </div>
-            </div>
-          </div>
-
-          {candidate.executive_summary && (
-            <div className="mb-6">
-              <div className="text-[10px] text-accent tracking-widest uppercase mb-2">
-                Arbitrator's verdict
-              </div>
-              <p className="text-sm text-[#c0d0e0] leading-relaxed bg-bg border border-border rounded-lg p-4">
-                {candidate.executive_summary}
-              </p>
             </div>
           )}
 
-          <div className="text-[10px] text-[#4a8aa0] tracking-widest uppercase mb-3">
-            Specialist panel
-          </div>
-          <div className="space-y-3 mb-6">
-            {candidate.agent_reviews.map((review) => (
-              <AgentCard key={review.id} review={review} />
-            ))}
-          </div>
+          {/* FIX: replaced executive_summary with strengths + risks */}
+          {hasVerdict && (
+            <div className="mb-6 space-y-3">
+              {candidate.strengths.length > 0 && (
+                <div className="bg-bg border border-border rounded-lg p-4">
+                  <div className="text-[10px] text-accent tracking-widest uppercase mb-2">
+                    Strengths
+                  </div>
+                  <ul className="space-y-1">
+                    {candidate.strengths.map((s, i) => (
+                      <li key={i} className="text-xs text-[#9ab0c0] flex gap-1.5">
+                        <span className="text-accent">✓</span> {s}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {candidate.risks.length > 0 && (
+                <div className="bg-bg border border-border rounded-lg p-4">
+                  <div className="text-[10px] text-[#c08a4a] tracking-widest uppercase mb-2">
+                    Risks to probe
+                  </div>
+                  <ul className="space-y-1">
+                    {candidate.risks.map((r, i) => (
+                      <li key={i} className="text-xs text-[#9ab0c0] flex gap-1.5">
+                        <span className="text-[#c08a4a]">⚠</span> {r}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
+
+          {candidate.agent_reviews.length > 0 && (
+            <>
+              <div className="text-[10px] text-[#4a8aa0] tracking-widest uppercase mb-3">
+                Specialist panel
+              </div>
+              <div className="space-y-3 mb-6">
+                {candidate.agent_reviews.map((review) => (
+                  <AgentCard key={review.id} review={review} />
+                ))}
+              </div>
+            </>
+          )}
 
           <div className="border-t border-border pt-4 flex gap-6 text-xs text-[#3a5a6a]">
             {candidate.retrieval_method && (
