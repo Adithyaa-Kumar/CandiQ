@@ -1,37 +1,43 @@
-// components/ConsensusTable.tsx
-// ───────────────────────────────
-// The "trust" view: every candidate's consensus score plus the three
-// specialist scores that fed into it, side by side, so a recruiter never
-// has to take the ranking on faith. Clicking a row opens the full
-// rationale in AgentReviewDrawer (managed by the parent).
-
 import type { AgentType, JobResultItem } from "@/types"
 
-const AGENT_COLUMNS: { type: AgentType; label: string }[] = [
-  { type: "tech_specialist", label: "Tech" },
+const AGENT_COLS: { type: AgentType; label: string }[] = [
+  { type: "tech_specialist",       label: "Tech"       },
   { type: "trajectory_specialist", label: "Trajectory" },
   { type: "behavioral_specialist", label: "Behavioral" },
 ]
 
-function getAgentScore(item: JobResultItem, type: AgentType): number | null {
-  return item.agent_reviews.find((r) => r.agent_type === type)?.score ?? null
+function getScore(item: JobResultItem, type: AgentType) {
+  return item.agent_reviews.find(r => r.agent_type === type)?.score ?? null
 }
 
-function scoreColor(score: number | null): string {
-  if (score === null) return "text-[#3a5a6a]"
-  if (score >= 80) return "text-accent"
-  if (score >= 60) return "text-accent2"
-  return "text-[#c08a4a]"
+function ScoreBadge({ score }: { score: number | null }) {
+  if (score === null) return <span className="text-text-tertiary text-sm">—</span>
+  const color = score >= 80 ? "text-success bg-success-light" :
+                score >= 60 ? "text-warning bg-warning-light" :
+                              "text-error bg-error-light"
+  return (
+    <span className={`inline-block tabular-nums text-xs font-semibold px-2 py-0.5 rounded-md ${color}`}>
+      {score.toFixed(0)}
+    </span>
+  )
 }
 
-interface ConsensusTableProps {
+function ConsensusScore({ score }: { score: number | null }) {
+  if (score === null) return <span className="text-text-tertiary font-medium">—</span>
+  const color = score >= 80 ? "text-success" : score >= 60 ? "text-warning" : "text-error"
+  return <span className={`font-bold text-base tabular-nums ${color}`}>{score.toFixed(1)}</span>
+}
+
+interface Props {
   results: JobResultItem[]
   selectedCandidateId: string | null
   onSelect: (item: JobResultItem) => void
 }
 
-export function ConsensusTable({ results, selectedCandidateId, onSelect }: ConsensusTableProps) {
+export function ConsensusTable({ results, selectedCandidateId, onSelect }: Props) {
   const sorted = [...results].sort((a, b) => {
+    if (a.is_disqualified && !b.is_disqualified) return 1
+    if (!a.is_disqualified && b.is_disqualified) return -1
     if (a.final_rank === null) return 1
     if (b.final_rank === null) return -1
     return a.final_rank - b.final_rank
@@ -39,79 +45,88 @@ export function ConsensusTable({ results, selectedCandidateId, onSelect }: Conse
 
   if (sorted.length === 0) {
     return (
-      <div className="bg-panel border border-border rounded-lg p-10 text-center">
-        <p className="text-[#3a5a6a] text-sm">No candidates cleared the retrieval filter.</p>
+      <div className="bg-bg rounded-2xl shadow-card border border-border p-12 text-center">
+        <div className="text-4xl mb-3">🔍</div>
+        <p className="text-text-secondary font-medium">No candidates cleared the retrieval filter.</p>
+        <p className="text-text-tertiary text-sm mt-1">Try relaxing the job description requirements or uploading more candidates.</p>
       </div>
     )
   }
 
   return (
-    <div className="bg-panel border border-border rounded-lg overflow-hidden">
+    <div className="bg-bg rounded-2xl shadow-card border border-border overflow-hidden">
       <div className="overflow-x-auto">
-        <table className="w-full text-sm">
+        <table className="w-full">
           <thead>
-            <tr className="border-b border-border text-left">
-              <th className="px-4 py-3 text-[10px] text-[#4a8aa0] tracking-widest uppercase font-normal w-12">
-                Rank
-              </th>
-              <th className="px-4 py-3 text-[10px] text-[#4a8aa0] tracking-widest uppercase font-normal">
-                Candidate
-              </th>
-              <th className="px-4 py-3 text-[10px] text-[#4a8aa0] tracking-widest uppercase font-normal text-right">
-                Consensus
-              </th>
-              {AGENT_COLUMNS.map((col) => (
-                <th
-                  key={col.type}
-                  className="px-4 py-3 text-[10px] text-[#4a8aa0] tracking-widest uppercase font-normal text-right hidden md:table-cell"
-                >
-                  {col.label}
+            <tr className="bg-surface border-b border-border">
+              <th className="text-left px-5 py-3.5 text-xs font-semibold text-text-tertiary uppercase tracking-wider w-12">#</th>
+              <th className="text-left px-5 py-3.5 text-xs font-semibold text-text-tertiary uppercase tracking-wider">Candidate</th>
+              <th className="text-right px-5 py-3.5 text-xs font-semibold text-text-tertiary uppercase tracking-wider">Score</th>
+              {AGENT_COLS.map(c => (
+                <th key={c.type} className="text-right px-5 py-3.5 text-xs font-semibold text-text-tertiary uppercase tracking-wider hidden md:table-cell">
+                  {c.label}
                 </th>
               ))}
-              <th className="px-4 py-3 w-8" />
+              <th className="px-5 py-3.5 w-8" />
             </tr>
           </thead>
-          <tbody>
+          <tbody className="divide-y divide-border">
             {sorted.map((item) => {
               const isSelected = item.candidate_id === selectedCandidateId
+              const isDisq = item.is_disqualified
+
               return (
                 <tr
                   key={item.candidate_id}
                   onClick={() => onSelect(item)}
-                  className={`border-b border-border/60 last:border-0 cursor-pointer transition-colors ${
-                    isSelected ? "bg-accent/5" : "hover:bg-bg/60"
+                  className={`cursor-pointer transition-colors ${
+                    isSelected ? "bg-accent-light" :
+                    isDisq    ? "bg-surface/50 hover:bg-surface" :
+                                "hover:bg-surface"
                   }`}
                 >
-                  <td className="px-4 py-3 text-[#3a5a6a] tabular-nums">
-                    {item.final_rank ?? "—"}
-                  </td>
-                  <td className="px-4 py-3">
-                    <div className="text-[#c0d0e0]">{item.candidate_name}</div>
-                    {item.current_title && (
-                      <div className="text-[#3a5a6a] text-xs mt-0.5">{item.current_title}</div>
+                  <td className="px-5 py-4">
+                    {isDisq ? (
+                      <span className="text-xs text-error font-medium">✗</span>
+                    ) : (
+                      <span className="text-sm font-semibold text-text-tertiary tabular-nums">
+                        {item.final_rank ?? "—"}
+                      </span>
                     )}
                   </td>
-                  <td
-                    className={`px-4 py-3 text-right tabular-nums font-medium ${scoreColor(
-                      item.consensus_score
-                    )}`}
-                  >
-                    {item.consensus_score?.toFixed(1) ?? "—"}
+                  <td className="px-5 py-4">
+                    <div className={`font-semibold text-sm ${isDisq ? "text-text-tertiary" : "text-text-primary"}`}>
+                      {item.candidate_name}
+                    </div>
+                    {item.current_title && (
+                      <div className="text-xs text-text-tertiary mt-0.5 capitalize">{item.current_title}</div>
+                    )}
+                    {isDisq && item.disqualify_reason && (
+                      <div className="text-xs text-error mt-1 bg-error-light px-2 py-0.5 rounded-md inline-block">
+                        {item.disqualify_reason}
+                      </div>
+                    )}
+                    {/* Strengths preview */}
+                    {!isDisq && item.strengths.length > 0 && (
+                      <div className="text-xs text-text-tertiary mt-1 line-clamp-1">
+                        {item.strengths[0]}
+                      </div>
+                    )}
                   </td>
-                  {AGENT_COLUMNS.map((col) => {
-                    const score = getAgentScore(item, col.type)
-                    return (
-                      <td
-                        key={col.type}
-                        className={`px-4 py-3 text-right tabular-nums hidden md:table-cell ${scoreColor(
-                          score
-                        )}`}
-                      >
-                        {score?.toFixed(0) ?? "—"}
-                      </td>
-                    )
-                  })}
-                  <td className="px-4 py-3 text-[#2a4a5a]">›</td>
+                  <td className="px-5 py-4 text-right">
+                    <ConsensusScore score={item.consensus_score} />
+                  </td>
+                  {AGENT_COLS.map(c => (
+                    <td key={c.type} className="px-5 py-4 text-right hidden md:table-cell">
+                      <ScoreBadge score={getScore(item, c.type)} />
+                    </td>
+                  ))}
+                  <td className="px-5 py-4">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+                         stroke={isSelected ? "#2563eb" : "#94a3b8"} strokeWidth="2">
+                      <polyline points="9 18 15 12 9 6"/>
+                    </svg>
+                  </td>
                 </tr>
               )
             })}

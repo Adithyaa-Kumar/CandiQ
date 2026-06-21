@@ -23,7 +23,7 @@ BUG FIXES applied:
 """
 
 from typing import Optional
-from datetime import datetime
+from datetime import datetime, timedelta
 import uuid
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
@@ -56,6 +56,7 @@ async def upload_candidates(
         .filter(
             CandidatePool.owner_id == user.id,
             CandidatePool.status == PoolStatus.PROCESSING,
+            CandidatePool.created_at > datetime.utcnow() - timedelta(hours=2)
         )
         .first()
     )

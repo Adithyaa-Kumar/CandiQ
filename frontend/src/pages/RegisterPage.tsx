@@ -1,7 +1,5 @@
-// pages/RegisterPage.tsx
 import { useState, type FormEvent } from "react"
 import { Link, useNavigate } from "react-router-dom"
-
 import { useAuth } from "@/hooks/useAuth"
 
 export default function RegisterPage() {
@@ -15,96 +13,92 @@ export default function RegisterPage() {
     e.preventDefault()
     clearError()
     try {
-      await register(email, password, fullName || undefined)
+      await register(email, password, fullName)
       navigate("/upload")
-    } catch {
-      // error already in store state
-    }
+    } catch {}
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-bg">
-      <div className="w-full max-w-sm">
-        <div className="mb-8 text-center">
-          <div className="flex items-center justify-center gap-2 mb-2">
-            <div className="w-2 h-2 rounded-full bg-accent shadow-[0_0_8px_#00d4aa]" />
-            <span className="text-accent text-sm tracking-[0.2em] uppercase font-semibold">
-              CandiQ
-            </span>
+    <div className="min-h-screen bg-surface flex items-center justify-center p-4">
+      <div className="w-full max-w-sm fade-in">
+        <div className="text-center mb-8">
+          <div className="inline-flex items-center justify-center w-12 h-12 bg-accent rounded-xl mb-4 shadow-card-md">
+            <svg width="22" height="22" viewBox="0 0 14 14" fill="none">
+              <path d="M7 1L12 4V10L7 13L2 10V4L7 1Z" fill="white" fillOpacity="0.9"/>
+              <path d="M7 5L9.5 6.5V9.5L7 11L4.5 9.5V6.5L7 5Z" fill="white"/>
+            </svg>
           </div>
-          <p className="text-[#3a5a6a] text-xs">AI Candidate Ranking</p>
+          <h1 className="text-xl font-semibold text-text-primary">CandiQ</h1>
+          <p className="text-text-tertiary text-sm mt-1">AI candidate ranking</p>
         </div>
 
-        <form onSubmit={handleSubmit} className="bg-panel border border-border rounded-lg p-6 space-y-4">
-          <h1 className="text-[#e2e8f0] text-lg font-light mb-4">Create account</h1>
+        <div className="bg-bg rounded-2xl shadow-card-lg border border-border p-8">
+          <h2 className="text-lg font-semibold text-text-primary mb-6">Create account</h2>
 
           {error && (
-            <div className="px-3 py-2 border border-red-900/50 bg-red-950/30 text-red-400 text-xs rounded">
+            <div className="mb-4 px-4 py-3 bg-error-light border border-red-200 text-error text-sm rounded-xl">
               {error}
             </div>
           )}
 
-          <div>
-            <label className="block text-xs text-[#4a8aa0] tracking-widest uppercase mb-1.5">
-              Full name
-            </label>
-            <input
-              type="text"
-              value={fullName}
-              onChange={(e) => setFullName(e.target.value)}
-              className="w-full bg-bg border border-border focus:border-accent/50 rounded px-3 py-2
-                         text-sm text-[#c0d0e0] outline-none transition-colors"
-              placeholder="Jane Recruiter"
-            />
-          </div>
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium text-text-secondary mb-1.5">Full name</label>
+              <input
+                type="text"
+                value={fullName}
+                onChange={(e) => setFullName(e.target.value)}
+                className="w-full border border-border rounded-xl px-4 py-2.5 text-sm text-text-primary
+                           placeholder-text-tertiary outline-none focus:border-accent focus:ring-2
+                           focus:ring-accent/10 transition-all bg-bg"
+                placeholder="Jane Smith"
+              />
+            </div>
 
-          <div>
-            <label className="block text-xs text-[#4a8aa0] tracking-widest uppercase mb-1.5">
-              Email
-            </label>
-            <input
-              type="email"
-              required
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              className="w-full bg-bg border border-border focus:border-accent/50 rounded px-3 py-2
-                         text-sm text-[#c0d0e0] outline-none transition-colors"
-              placeholder="you@company.com"
-            />
-          </div>
+            <div>
+              <label className="block text-sm font-medium text-text-secondary mb-1.5">Email</label>
+              <input
+                type="email"
+                required
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                className="w-full border border-border rounded-xl px-4 py-2.5 text-sm text-text-primary
+                           placeholder-text-tertiary outline-none focus:border-accent focus:ring-2
+                           focus:ring-accent/10 transition-all bg-bg"
+                placeholder="you@company.com"
+              />
+            </div>
 
-          <div>
-            <label className="block text-xs text-[#4a8aa0] tracking-widest uppercase mb-1.5">
-              Password
-            </label>
-            <input
-              type="password"
-              required
-              minLength={8}
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className="w-full bg-bg border border-border focus:border-accent/50 rounded px-3 py-2
-                         text-sm text-[#c0d0e0] outline-none transition-colors"
-              placeholder="At least 8 characters"
-            />
-          </div>
+            <div>
+              <label className="block text-sm font-medium text-text-secondary mb-1.5">Password</label>
+              <input
+                type="password"
+                required
+                minLength={8}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="w-full border border-border rounded-xl px-4 py-2.5 text-sm text-text-primary
+                           placeholder-text-tertiary outline-none focus:border-accent focus:ring-2
+                           focus:ring-accent/10 transition-all bg-bg"
+                placeholder="8+ characters"
+              />
+            </div>
 
-          <button
-            type="submit"
-            disabled={isLoading}
-            className="w-full py-2.5 bg-accent text-bg font-semibold text-sm tracking-widest uppercase
-                       rounded hover:bg-[#00eabb] transition-colors disabled:opacity-50"
-          >
-            {isLoading ? "Creating account..." : "Create account"}
-          </button>
+            <button
+              type="submit"
+              disabled={isLoading}
+              className="w-full py-2.5 bg-accent text-white font-semibold text-sm rounded-xl
+                         hover:bg-accent-hover transition-colors disabled:opacity-50 shadow-card mt-2"
+            >
+              {isLoading ? "Creating account…" : "Create account"}
+            </button>
+          </form>
 
-          <p className="text-center text-xs text-[#3a5a6a] pt-2">
+          <p className="text-center text-sm text-text-tertiary mt-6">
             Already have an account?{" "}
-            <Link to="/login" className="text-accent hover:underline">
-              Sign in
-            </Link>
+            <Link to="/login" className="text-accent font-medium hover:underline">Sign in</Link>
           </p>
-        </form>
+        </div>
       </div>
     </div>
   )

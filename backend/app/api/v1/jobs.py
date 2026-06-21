@@ -139,6 +139,8 @@ def get_job_status(
         created_at=job.created_at,
         started_at=job.started_at,
         completed_at=job.completed_at,
+        llm_calls=job.llm_calls or 0,
+        eval_time_seconds=job.eval_time_seconds,
     )
 
 

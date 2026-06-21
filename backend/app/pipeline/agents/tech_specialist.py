@@ -90,18 +90,20 @@ def build_prompt(jd_signals: JDSignals, candidates: list[dict]) -> str:
     preferred  = [k for k, v in sorted_skills if v < 7][:10]
 
     def _candidate_text(c: dict) -> str:
-        # FIX 1: rich profile already contains summary + roles + skills.
-        # Only add the numerical counts from intelligence profile — not
-        # the raw evidence text blocks (those are inside the profile already).
         profile = build_rich_profile(c)
         intel   = c.get("intelligence_profile") or {}
+        evidence_score = intel.get("evidence_score", 0)
         return (
             f"[{c.get('candidate_id', '')}]\n"
             f"{profile}\n"
-            f"Evidence counts: AI/ML={intel.get('production_ai_evidence', 0)} | "
-            f"Ownership={intel.get('ownership_evidence', 0)} | "
-            f"Scale={intel.get('scale_evidence', 0)} | "
-            f"Trajectory: {intel.get('career_trajectory', 'unknown')}"
+            f"Intelligence signals: AI/ML roles={intel.get('production_ai_evidence', 0)} | "
+            f"Ownership acts={intel.get('ownership_evidence', 0)} | "
+            f"Scale evidence={intel.get('scale_evidence', 0)} | "
+            f"Leadership acts={intel.get('leadership_evidence', 0)}\n"
+            f"Evidence verbs: built={intel.get('built_count', 0)} shipped={intel.get('shipped_count', 0)} "
+            f"scaled={intel.get('scaled_count', 0)} led={intel.get('led_count', 0)} "
+            f"→ evidence_score={evidence_score} (higher = more concrete execution proof)\n"
+            f"Career: {intel.get('career_trajectory', 'unknown')}"
         )
 
     candidate_blob = "\n\n---\n\n".join(_candidate_text(c) for c in candidates)

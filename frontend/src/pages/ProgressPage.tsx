@@ -1,17 +1,9 @@
-// pages/ProgressPage.tsx
-// ───────────────────────
-// Polls the job via useJobPolling and shows live stage progress. On
-// completion, auto-navigates to the results page after a short beat so
-// the user actually sees the "done" tick land instead of being yanked
-// away mid-animation.
-
 import { useEffect } from "react"
 import { useNavigate, useParams } from "react-router-dom"
-
 import { ProgressTracker } from "@/components/ProgressTracker"
 import { useJobPolling } from "@/hooks/useJobPolling"
 
-const REDIRECT_DELAY_MS = 700
+const REDIRECT_DELAY_MS = 800
 
 export default function ProgressPage() {
   const { jobId } = useParams<{ jobId: string }>()
@@ -25,36 +17,55 @@ export default function ProgressPage() {
     }
   }, [job?.status, jobId, navigate])
 
-  if (!jobId) return <MissingJobId />
+  if (!jobId) {
+    return (
+      <div className="max-w-3xl mx-auto px-6 py-24 text-center text-text-tertiary text-sm">
+        No job ID in URL.
+      </div>
+    )
+  }
+
+  const isFailed = job?.status === "failed"
+  const isComplete = job?.status === "completed"
 
   return (
-    <div className="max-w-3xl mx-auto px-8 py-16">
-      <div className="text-center mb-10">
-        <span className="text-xs text-[#4a8aa0] tracking-[0.2em] uppercase">
-          {job?.jd_signals?.role_title ?? "Evaluating candidates"}
-        </span>
-        <h1 className="text-2xl font-light text-[#e2e8f0] mt-2">
-          {job?.status === "completed"
-            ? "Evaluation complete"
-            : job?.status === "failed"
-            ? "Evaluation failed"
-            : "Running the panel..."}
+    <div className="max-w-3xl mx-auto px-6 py-12">
+      {/* Header */}
+      <div className="mb-10">
+        {job?.jd_signals?.role_title && (
+          <div className="text-xs font-semibold text-accent uppercase tracking-widest mb-2">
+            {job.jd_signals.role_title}
+          </div>
+        )}
+        <h1 className="text-2xl font-bold text-text-primary">
+          {isComplete ? "Evaluation complete" :
+           isFailed   ? "Evaluation failed" :
+                        "Running the panel…"}
         </h1>
+        {job?.status_message && !isFailed && (
+          <p className="text-text-secondary text-sm mt-2">{job.status_message}</p>
+        )}
       </div>
 
-      {error && (
-        <div className="mb-6 px-4 py-3 border border-red-900/50 bg-red-950/30 text-red-400 text-sm rounded">
-          {error}
+      {/* Error */}
+      {(error || (isFailed && job?.error_message)) && (
+        <div className="mb-6 flex gap-3 px-4 py-4 bg-error-light border border-red-200 text-error text-sm rounded-xl">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="shrink-0 mt-0.5">
+            <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+          </svg>
+          <div>
+            {error || job?.error_message}
+            {(error || job?.error_message)?.includes("schema") && (
+              <div className="mt-1 text-xs opacity-80">
+                The database schema may need a migration. Run <code className="font-mono bg-red-100 px-1 rounded">alembic upgrade head</code> and restart.
+              </div>
+            )}
+          </div>
         </div>
       )}
 
-      {job?.status === "failed" && job.error_message && (
-        <div className="mb-6 px-4 py-3 border border-red-900/50 bg-red-950/30 text-red-400 text-sm rounded">
-          {job.error_message}
-        </div>
-      )}
-
-      <div className="bg-panel border border-border rounded-lg p-6 mb-6">
+      {/* Progress tracker */}
+      <div className="bg-bg rounded-2xl shadow-card border border-border p-6 mb-6">
         <ProgressTracker
           currentStage={job?.current_stage ?? "queued"}
           status={job?.status ?? "pending"}
@@ -62,44 +73,52 @@ export default function ProgressPage() {
         />
       </div>
 
-      {job?.status_message && (
-        <div className="bg-bg border border-border rounded px-4 py-3 mb-6">
-          <span className="text-accent text-xs">$</span>{" "}
-          <span className="text-[#7a9ab0] text-xs font-mono">{job.status_message}</span>
+      {/* Live stats */}
+      {((job?.shortlisted_count ?? 0) > 0 || (job?.disqualified_count ?? 0) > 0 || (job?.total_candidates ?? 0) > 0) && (
+        <div className="grid grid-cols-3 gap-3 mb-6">
+          {[
+            { label: "Total pool", value: job?.total_candidates ?? "—", color: "text-text-primary" },
+            { label: "Filtered out", value: job?.disqualified_count ?? "—", color: "text-text-secondary" },
+            { label: "Shortlisted", value: job?.shortlisted_count ?? "—", color: "text-accent" },
+          ].map(({ label, value, color }) => (
+            <div key={label} className="bg-bg rounded-2xl shadow-card border border-border p-4 text-center">
+              <div className={`text-2xl font-bold tabular-nums ${color}`}>{value}</div>
+              <div className="text-xs text-text-tertiary font-medium mt-1">{label}</div>
+            </div>
+          ))}
         </div>
       )}
 
+      {/* Role signals */}
       {job?.jd_signals && (
-        <div className="bg-panel border border-border rounded-lg p-5 mb-6">
-          <div className="text-xs text-[#4a8aa0] tracking-widest uppercase mb-3">Role signals</div>
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm mb-4">
-            <div>
-              <div className="text-[#3a5a6a] text-xs mb-1">Domain</div>
-              <div className="text-[#c0d0e0]">{job.jd_signals.domain}</div>
-            </div>
-            <div>
-              <div className="text-[#3a5a6a] text-xs mb-1">Seniority</div>
-              <div className="text-[#c0d0e0]">{job.jd_signals.seniority}</div>
-            </div>
-            <div>
-              <div className="text-[#3a5a6a] text-xs mb-1">Experience</div>
-              <div className="text-[#c0d0e0]">
-                {job.jd_signals.exp_min}–{job.jd_signals.exp_max} yrs
+        <div className="bg-bg rounded-2xl shadow-card border border-border p-6 mb-6">
+          <div className="text-xs font-semibold text-text-tertiary uppercase tracking-widest mb-4">
+            Role signals detected
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-5">
+            {[
+              { label: "Domain",     value: job.jd_signals.domain },
+              { label: "Seniority",  value: job.jd_signals.seniority },
+              { label: "Experience", value: `${job.jd_signals.exp_min}–${job.jd_signals.exp_max} yrs` },
+              { label: "Candidates", value: job.total_candidates },
+            ].map(({ label, value }) => (
+              <div key={label}>
+                <div className="text-xs text-text-tertiary mb-1">{label}</div>
+                <div className="text-sm font-semibold text-text-primary capitalize">{String(value)}</div>
               </div>
-            </div>
-            <div>
-              <div className="text-[#3a5a6a] text-xs mb-1">Candidates</div>
-              <div className="text-[#c0d0e0]">{job.total_candidates}</div>
-            </div>
+            ))}
           </div>
           {job.jd_signals.top_skills.length > 0 && (
             <div className="flex flex-wrap gap-2">
               {job.jd_signals.top_skills.map(([skill, weight]) => (
-                <span
-                  key={skill}
-                  className="text-xs px-2.5 py-1 rounded border border-border bg-bg text-[#7a9ab0]"
-                >
-                  {skill} <span className="text-[#2a4a5a]">·{weight.toFixed(1)}</span>
+                <span key={skill} className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-lg
+                                              border border-border bg-surface text-text-secondary font-medium">
+                  {skill}
+                  <span className={`text-[10px] font-bold ${
+                    weight >= 9 ? "text-error" : weight >= 7 ? "text-warning" : "text-text-tertiary"
+                  }`}>
+                    {weight >= 9 ? "required" : weight >= 7 ? "preferred" : ""}
+                  </span>
                 </span>
               ))}
             </div>
@@ -107,47 +126,43 @@ export default function ProgressPage() {
         </div>
       )}
 
-      {((job?.shortlisted_count ?? 0) > 0 || (job?.disqualified_count ?? 0) > 0) && (
-        <div className="grid grid-cols-3 gap-3 text-center">
-          <div className="bg-panel border border-border rounded-lg py-3">
-            <div className="text-lg text-[#c0d0e0]">{job?.total_candidates ?? "—"}</div>
-            <div className="text-[10px] text-[#3a5a6a] tracking-widest uppercase mt-1">Pool</div>
+      {/* Agent panel - show when running specialists */}
+      {(job?.current_stage === "specialist_panel" || job?.current_stage === "arbitration") && (
+        <div className="bg-bg rounded-2xl shadow-card border border-border p-6 mb-6">
+          <div className="text-xs font-semibold text-text-tertiary uppercase tracking-widest mb-4">
+            Expert panel
           </div>
-          <div className="bg-panel border border-border rounded-lg py-3">
-            <div className="text-lg text-[#c0d0e0]">{job?.disqualified_count ?? "—"}</div>
-            <div className="text-[10px] text-[#3a5a6a] tracking-widest uppercase mt-1">
-              Disqualified
-            </div>
-          </div>
-          <div className="bg-panel border border-border rounded-lg py-3">
-            <div className="text-lg text-accent">{job?.shortlisted_count ?? "—"}</div>
-            <div className="text-[10px] text-[#3a5a6a] tracking-widest uppercase mt-1">
-              Shortlisted
-            </div>
+          <div className="grid grid-cols-3 gap-3">
+            {[
+              { name: "Technical", desc: "Stack depth & architecture", icon: "⚙️" },
+              { name: "Trajectory", desc: "Career progression", icon: "📈" },
+              { name: "Behavioral", desc: "Ownership & initiative", icon: "🎯" },
+            ].map(({ name, desc, icon }) => (
+              <div key={name} className="p-4 bg-accent-light rounded-xl border border-blue-100">
+                <div className="text-base mb-2">{icon}</div>
+                <div className="text-xs font-semibold text-accent">{name}</div>
+                <div className="text-xs text-text-tertiary mt-0.5">{desc}</div>
+                <div className="flex items-center gap-1 mt-2">
+                  <div className="w-1.5 h-1.5 bg-accent rounded-full progress-pulse"/>
+                  <span className="text-[10px] text-accent">Running</span>
+                </div>
+              </div>
+            ))}
           </div>
         </div>
       )}
 
-      {!isPolling && job?.status === "failed" && (
-        <div className="text-center mt-8">
+      {isFailed && (
+        <div className="text-center mt-4">
           <button
             onClick={() => navigate("/upload")}
-            className="px-6 py-2 text-xs tracking-widest uppercase bg-accent text-bg font-semibold rounded hover:bg-[#00eabb] transition-colors"
+            className="px-6 py-2.5 bg-accent text-white font-semibold text-sm rounded-xl
+                       hover:bg-accent-hover transition-colors shadow-card"
           >
             Start a new evaluation
           </button>
         </div>
       )}
-    </div>
-  )
-}
-
-function MissingJobId() {
-  // jobId missing from the URL — shouldn't happen via normal navigation,
-  // but guards against a malformed deep link.
-  return (
-    <div className="max-w-3xl mx-auto px-8 py-16 text-center text-[#3a5a6a] text-sm">
-      No job ID in URL.
     </div>
   )
 }

@@ -47,6 +47,9 @@ class JobStatusResponse(BaseModel):
     created_at: datetime
     started_at: datetime | None
     completed_at: datetime | None
+    # Cost / performance metadata
+    llm_calls: int = 0
+    eval_time_seconds: float | None = None
 
     model_config = {"from_attributes": True}
 

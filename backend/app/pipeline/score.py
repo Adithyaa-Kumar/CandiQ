@@ -91,18 +91,16 @@ def _check_disqualifiers(flags: dict, signals: JDSignals) -> tuple[bool, str]:
     if signals.requires_product_co and flags["is_consulting_only"]:
         return True, "JD requires product company background; only consulting found"
 
-    # FIX 3: completely-wrong-role candidates were slipping through. Check
-    # has_bad_title BEFORE the heavier role_relevance computation so that
-    # obvious mismatches (accountants for ML roles) are caught fast.
+    # Completely-wrong-role candidates — only hard-disqualify on word-level
+    # bad_title match (e.g. "operations manager" for ML role). Never fail solely
+    # on role_relevance score, which is too noisy at this stage.
     if flags.get("has_bad_title"):
         return True, f"Current title indicates irrelevant domain: {flags['current_title']}"
 
-    role_relevance = compute_role_relevance(flags, signals)
-    if role_relevance < 10:
-        return True, "Insufficient role relevance"
-
+    # Skill gate — very low floor (5) so candidates with synonym/adjacent skills
+    # reach the agent panel; agents make the nuanced judgment, not a hard rule.
     skill_score = _score_skills(flags, signals)
-    if skill_score < 10:
+    if skill_score < 5:
         return True, "Insufficient skill overlap"
 
     if (

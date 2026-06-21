@@ -101,8 +101,10 @@ def build_prompt(jd_signals: JDSignals, candidates: list[dict]) -> str:
             f"[{c.get('candidate_id', '')}]\n"
             f"{profile}\n"
             f"Career trajectory (oldest→newest): {intel.get('career_trajectory', 'unknown')}\n"
-            f"Ownership signals count: {intel.get('ownership_evidence', 0)} | "
-            f"Leadership signals count: {intel.get('leadership_evidence', 0)}"
+            f"Ownership signals: count={intel.get('ownership_evidence', 0)} | "
+            f"Leadership signals: count={intel.get('leadership_evidence', 0)} | "
+            f"led_count={intel.get('led_count', 0)} (jobs where they led/managed)\n"
+            f"Scale evidence: {intel.get('scale_evidence', 0)} roles with scale/production signals"
         )
 
     candidate_blob = "\n\n---\n\n".join(_candidate_text(c) for c in candidates)

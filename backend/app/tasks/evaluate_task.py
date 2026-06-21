@@ -81,9 +81,13 @@ def evaluate_job_task(self, job_id: str) -> dict:
             status_message="Analyzing job description...",
         )
 
+        _eval_start = datetime.now(timezone.utc)
+        _llm_calls  = 0
+
         # ── Stage 1a: JD analysis ────────────────────────────────────────
         try:
             jd_signals = analyze_jd(job.jd_text)
+            _llm_calls += 1  # 1 call for JD analysis
         except Exception as e:
             _update_job(
                 db, job,
@@ -192,6 +196,12 @@ def evaluate_job_task(self, job_id: str) -> dict:
             shortlisted=len(shortlisted_candidate_dicts)
         )
         panel_result = run_panel_pipeline(jd_signals, shortlisted_candidate_dicts, _progress_cb)
+
+        # 3 specialists × batches + arbitrator batches
+        from math import ceil
+        specialist_batches = ceil(len(shortlisted_candidate_dicts) / 10)
+        arbitrator_batches = ceil(len(shortlisted_candidate_dicts) / 8)
+        _llm_calls += specialist_batches * 3 + arbitrator_batches
         logger.info(
             "panel_output",
             verdicts=len(panel_result.verdicts)
@@ -283,6 +293,8 @@ def evaluate_job_task(self, job_id: str) -> dict:
                 disqualify_reason=rule_score["disqualify_reason"],
             ))
 
+        _eval_secs = (datetime.now(timezone.utc) - _eval_start).total_seconds()
+
         _update_job(
             db, job,
             status=JobStatus.COMPLETED,
@@ -291,6 +303,8 @@ def evaluate_job_task(self, job_id: str) -> dict:
             completed_at=datetime.now(timezone.utc),
             status_message="Evaluation complete.",
             error_message=None,
+            llm_calls=_llm_calls,
+            eval_time_seconds=round(_eval_secs, 1),
         )
 
         logger.info(

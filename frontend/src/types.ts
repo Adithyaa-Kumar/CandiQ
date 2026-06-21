@@ -1,8 +1,4 @@
-// types.ts
-// ─────────
-// Mirrors app/schemas/*.py exactly. Keep these in sync with the backend.
-
-// ── Auth ──────────────────────────────────────────────────────────────────
+// types.ts — mirrors backend schemas exactly
 
 export interface User {
   id: string
@@ -18,8 +14,6 @@ export interface TokenResponse {
   token_type: "bearer"
 }
 
-// ── Candidates ────────────────────────────────────────────────────────────
-
 export interface Candidate {
   id: string
   external_id: string | null
@@ -33,7 +27,7 @@ export interface CandidateIngestResponse {
   task_id: string
   candidates_received: number
   message: string
-  pool_id: string | null  // added: used to poll pool-status
+  pool_id: string | null
 }
 
 export interface PoolStatusResponse {
@@ -41,8 +35,6 @@ export interface PoolStatusResponse {
   pool_id: string | null
   candidate_count: number
 }
-
-// ── Jobs ──────────────────────────────────────────────────────────────────
 
 export type JobStatus = "pending" | "running" | "completed" | "failed"
 
@@ -83,6 +75,8 @@ export interface JobStatusResponse {
   created_at: string
   started_at: string | null
   completed_at: string | null
+  llm_calls: number
+  eval_time_seconds: number | null
 }
 
 export type AgentType = "tech_specialist" | "trajectory_specialist" | "behavioral_specialist"
@@ -106,7 +100,6 @@ export interface JobResultItem {
   rule_composite_score: number | null
   consensus_score: number | null
   final_rank: number | null
-  // FIX: was `executive_summary: string | null` — DB columns renamed in migration d4c1611d96eb
   strengths: string[]
   risks: string[]
   alternatives: string[]
@@ -124,8 +117,6 @@ export interface JobResultsResponse {
   shortlisted_count: number
   results: JobResultItem[]
 }
-
-// ── API error shape ──────────────────────────────────────────────────────
 
 export interface ApiError {
   detail: string | { msg: string; loc: string[] }[]

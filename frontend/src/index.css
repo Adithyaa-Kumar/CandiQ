@@ -2,28 +2,54 @@
 @tailwind components;
 @tailwind utilities;
 
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
 * {
   box-sizing: border-box;
 }
 
 body {
   margin: 0;
-  font-family: "JetBrains Mono", monospace;
-  background-color: #0a0d14;
-  color: #e2e8f0;
+  font-family: "Inter", system-ui, -apple-system, sans-serif;
+  background-color: #ffffff;
+  color: #0f172a;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
-::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
-}
-::-webkit-scrollbar-track {
-  background: #0a0d14;
-}
-::-webkit-scrollbar-thumb {
-  background: #1e2a3a;
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: #f8fafc; }
+::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+
+/* Smooth transitions */
+* { transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1); }
+
+/* Focus ring */
+:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
   border-radius: 4px;
 }
-::-webkit-scrollbar-thumb:hover {
-  background: #2a3a4a;
+
+/* Progress bar animation */
+@keyframes progress-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
 }
+
+.progress-pulse { animation: progress-pulse 1.5s ease-in-out infinite; }
+
+@keyframes slide-in-right {
+  from { transform: translateX(100%); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+
+.slide-in-right { animation: slide-in-right 0.25s ease-out; }
+
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.fade-in { animation: fade-in 0.2s ease-out; }
