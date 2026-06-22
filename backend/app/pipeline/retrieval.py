@@ -3,35 +3,12 @@ pipeline/retrieval.py
 ────────────────────────
 Stage 1: Strict Retrieval Filter.
 
-Narrows the full candidate pool down to an adaptive shortlist BEFORE
-the expensive multi-agent panel runs.
+Changes from spec:
+  Tier 1 (Tier 5 spec): Intelligence-first retrieval — query text now
+    built from intelligence_profile signals, not just raw resume.
+  Tier 4: Score normalization applied after retrieval gate.
 
-Safety design:
-  1. Hard rule-based gate (score.py disqualifiers) — boolean pass/fail.
-  2. Dense vector search (semantic) — cosine similarity to JD embedding.
-  3. Sparse keyword search (lexical) — BM25 over candidate text.
-  4. Shortlist = UNION of top-N from (2) and top-N from (3), capped.
-
-BUG FIXES applied:
-  1. Qdrant dense_search was called with limit=total (entire pool size)
-     but the Qdrant client's default search limit is 10 — if the caller
-     doesn't explicitly set `with_payload=True` in its PointsSelector,
-     payloads come back empty. Fixed by ensuring we always get payloads
-     (handled in qdrant_client.py) and using the actual total as limit.
-  2. _combined_score() used best-of (max(dense, sparse)) rather than
-     a weighted blend — a candidate who scored 100 on sparse but 0 on
-     dense (exact keyword match, no semantic understanding) would appear
-     first. Changed to a blended score: 0.6*dense + 0.4*sparse for
-     fairer reranking, with normalisation to 0-100.
-  3. tokenizer split on spaces only — "machine-learning" and
-     "machine learning" tokenized differently. Added hyphen split.
-  4. JD query text builder included the full jd_text which could be very
-     long (multi-page PDFs) and dominated the embedding, washing out the
-     structured signals (skills, ideal candidate). Capped raw JD to 1500
-     chars and moved it after the structured fields.
-  5. When all candidates are disqualified, the function returned
-     {"shortlist": [], ...} but the evaluate_task expected the key
-     "shortlist_size" too — always present now.
+Existing bug fixes retained from prior version.
 """
 
 from __future__ import annotations
@@ -45,7 +22,7 @@ from app.config import get_settings
 from app.pipeline.embed import embed_text
 from app.pipeline.jd_analyzer import JDSignals
 from app.pipeline.parse_candidates import build_candidate_text, get_career_flags
-from app.pipeline.score import score_candidate
+from app.pipeline.score import score_candidate, normalize_scores
 from app.vector_store.qdrant_client import dense_search
 from app.logging_conf import get_logger
 
@@ -54,7 +31,7 @@ logger   = get_logger(__name__)
 
 
 def _build_jd_query_text(jd_text: str, signals: JDSignals) -> str:
-    # FIX 4: structured fields first, then truncated raw JD
+    """Structured JD query with skills first, raw JD truncated."""
     skills = ", ".join(signals.skill_weights.keys())
     return (
         f"Role: {signals.role_title}\n"
@@ -64,6 +41,38 @@ def _build_jd_query_text(jd_text: str, signals: JDSignals) -> str:
         f"Ideal Candidate:\n{signals.ideal_candidate_summary}\n\n"
         f"Original JD (excerpt):\n{jd_text[:1500]}"
     )
+
+
+def _build_intelligence_query_text(candidate: dict) -> str:
+    """
+    Intelligence-first retrieval query (Tier 6 spec item 6).
+    Retrieves using evidence signals rather than raw resume text.
+    """
+    intel = candidate.get("intelligence_profile") or {}
+    parts = []
+
+    trajectory = intel.get("career_trajectory", "")
+    if trajectory:
+        parts.append(f"Career: {trajectory}")
+
+    skills = intel.get("key_skills", [])
+    if skills:
+        parts.append(f"Skills: {', '.join(skills[:20])}")
+
+    for snippet in intel.get("ir_ml_evidence", [])[:3]:
+        parts.append(snippet[:200])
+
+    for snippet in intel.get("ownership_signals", [])[:2]:
+        parts.append(snippet[:150])
+
+    for snippet in intel.get("impact_signals", [])[:2]:
+        parts.append(snippet[:150])
+
+    # Fall back to raw resume text if profile is sparse
+    if len(parts) < 3:
+        parts.append(build_candidate_text(candidate)[:500])
+
+    return "\n".join(parts)
 
 
 def compute_shortlist_size(total_qualified: int) -> int:
@@ -79,12 +88,14 @@ def run_retrieval_filter(
 ) -> dict:
     total = len(candidates)
 
-    # ── Step 1: rule-based gate ──────────────────────────────────────────
+    # ── Step 1: rule-based gate ─────────────────────────────────────────
     qualified:    list[tuple[dict, dict, dict]] = []
     disqualified: list[tuple[dict, dict, dict]] = []
 
     for c in candidates:
         flags      = get_career_flags(c, signals)
+        # Attach intelligence profile to flags so score_candidate can use it
+        flags["intelligence_profile"] = c.get("intelligence_profile") or {}
         rule_score = score_candidate(flags, signals)
         if rule_score["disqualified"]:
             disqualified.append((c, flags, rule_score))
@@ -96,15 +107,23 @@ def run_retrieval_filter(
             "shortlist": [],
             "disqualified": disqualified,
             "total": total,
-            "shortlist_size": 0,          # FIX 5
+            "shortlist_size": 0,
         }
+
+    # Apply score normalization to qualified pool (Tier 4 fix)
+    qual_scores = [rule_score for _, _, rule_score in qualified]
+    normalize_scores(qual_scores)
+    # Write normalized scores back into the tuples
+    qualified = [
+        (c, flags, {**rule_score})
+        for (c, flags, _), rule_score in zip(qualified, qual_scores)
+    ]
 
     shortlist_size = compute_shortlist_size(len(qualified))
 
-    # If the qualified pool is small enough, skip vector search
     if len(qualified) <= shortlist_size:
         shortlist = [
-            (c, flags, rule_score, rule_score["composite_score"], "rule_gate_only")
+            (c, flags, rule_score, rule_score.get("normalized_score", rule_score["composite_score"]), "rule_gate_only")
             for c, flags, rule_score in qualified
         ]
         logger.info(
@@ -118,11 +137,10 @@ def run_retrieval_filter(
             "shortlist_size": len(shortlist),
         }
 
-    # ── Step 2: dense vector search ──────────────────────────────────────
+    # ── Step 2: dense vector search (intelligence-first) ────────────────
     jd_embedding = embed_text(_build_jd_query_text(jd_text, signals))
 
     qualified_ext_ids = {c.get("candidate_id") for c, _, _ in qualified}
-    # FIX 1: pass explicit large limit to get enough Qdrant results
     qdrant_hits = dense_search(jd_embedding, owner_id=owner_id, limit=max(total, 2000))
 
     dense_score_by_ext_id = {
@@ -142,21 +160,20 @@ def run_retrieval_filter(
         dense_score_by_ext_id.get(c.get("candidate_id"), 0.0) for c, _, _ in qualified
     ]
 
-    # ── Step 3: BM25 lexical search ─────────────────────────────────────
-    candidate_texts   = [build_candidate_text(c) for c, _, _ in qualified]
-    # FIX 3: also split on hyphens for compound terms
-    tokenized_corpus  = [_tokenize(t) for t in candidate_texts]
-    bm25              = BM25Okapi(tokenized_corpus)
-    query_tokens      = _tokenize(_build_jd_query_text(jd_text, signals))
+    # ── Step 3: BM25 lexical search (intelligence-first corpus) ─────────
+    # Use intelligence profile text for BM25 instead of raw resume
+    candidate_texts  = [_build_intelligence_query_text(c) for c, _, _ in qualified]
+    tokenized_corpus = [_tokenize(t) for t in candidate_texts]
+    bm25             = BM25Okapi(tokenized_corpus)
+    query_tokens     = _tokenize(_build_jd_query_text(jd_text, signals))
     sparse_scores_raw = bm25.get_scores(query_tokens)
 
     # ── Step 4: blended union shortlist ─────────────────────────────────
-    max_dense  = max(dense_scores)       if max(dense_scores) > 0  else 1.0
-    max_sparse = max(sparse_scores_raw)  if max(sparse_scores_raw) > 0 else 1.0
+    max_dense  = max(dense_scores)        if max(dense_scores) > 0  else 1.0
+    max_sparse = max(sparse_scores_raw)   if max(sparse_scores_raw) > 0 else 1.0
 
-    # FIX 2: 60/40 blend instead of pure best-of
     def _combined_score(i: int) -> float:
-        d = (dense_scores[i]    / max_dense)  * 100.0
+        d = (dense_scores[i]      / max_dense)  * 100.0
         s = (sparse_scores_raw[i] / max_sparse) * 100.0
         return round(0.60 * d + 0.40 * s, 2)
 
@@ -173,8 +190,8 @@ def run_retrieval_filter(
             return "both"
         return "dense" if in_dense else "sparse"
 
-    union_sorted    = sorted(union_indices, key=_combined_score, reverse=True)
-    final_indices   = union_sorted[:shortlist_size]
+    union_sorted  = sorted(union_indices, key=_combined_score, reverse=True)
+    final_indices = union_sorted[:shortlist_size]
 
     shortlist = [
         (
@@ -206,7 +223,6 @@ def run_retrieval_filter(
 
 
 def _tokenize(text: str) -> list[str]:
-    # FIX 3: split on commas, slashes, AND hyphens for compound terms
     for ch in (",", "/", "-"):
         text = text.replace(ch, " ")
     return [t.lower() for t in text.split() if len(t) > 1]

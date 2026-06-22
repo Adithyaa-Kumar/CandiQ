@@ -37,6 +37,8 @@ class JobResult(Base):
 
     # Final consensus output from the Arbitrator (Stage 3)
     consensus_score: Mapped[float] = mapped_column(Float, nullable=True)
+    normalized_score: Mapped[float] = mapped_column(Float, nullable=True)   # percentile-normalized
+    confidence: Mapped[float] = mapped_column(Float, nullable=True)         # specialist agreement 0-100
     final_rank: Mapped[int] = mapped_column(Integer, nullable=True)
     strengths: Mapped[list] = mapped_column(JSON, nullable=True, default=list)
     risks: Mapped[list] = mapped_column(JSON, nullable=True, default=list)

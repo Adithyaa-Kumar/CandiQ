@@ -122,6 +122,17 @@ def run_panel_pipeline(
         for c in shortlisted_candidates
     ]
 
-    result.verdicts = run_arbitrator(jd_signals, candidate_reviews_for_arbitrator)
+    # Build intelligence profile map so arbitrator can incorporate
+    # pre-computed why_selected / why_rejected signals (Tier 5)
+    candidate_intel_map = {
+        str(c.get("candidate_id", "")): (c.get("intelligence_profile") or {})
+        for c in shortlisted_candidates
+    }
+
+    result.verdicts = run_arbitrator(
+        jd_signals,
+        candidate_reviews_for_arbitrator,
+        candidate_intel_map=candidate_intel_map,
+    )
 
     return result

@@ -239,8 +239,14 @@ def evaluate_job_task(self, job_id: str) -> dict:
                     if verdict and verdict.consensus_score is not None
                     else None
                 ),
-                strengths=verdict.strengths if verdict else [],
-                risks=verdict.risks if verdict else [],
+                normalized_score=float(rule_score.get("normalized_score", 0.0)),
+                confidence=(
+                    float(verdict.confidence)
+                    if verdict and verdict.confidence is not None
+                    else None
+                ),
+                strengths=verdict.strengths if verdict else [],   # why_selected
+                risks=verdict.risks if verdict else [],           # why_rejected
                 alternatives=verdict.alternatives if verdict else [],
                 is_disqualified=False,
             )

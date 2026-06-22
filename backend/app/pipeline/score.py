@@ -1,107 +1,157 @@
 """
 pipeline/score.py
 ────────────────────
-Rule-based multi-dimensional scorer. All scoring parameters come from
-JDSignals — nothing is hardcoded to a specific role or domain.
+Evidence-first multi-dimensional scorer.
 
-Dimensions
-──────────
-  skills      — keyword match against JD skill_weights, depth-adjusted
-  experience  — proximity to JD's ideal exp band
-  career      — company pedigree, education, assessments, trajectory
-  activity    — recency, availability, notice period, responsiveness
-  platform    — profile quality, interview behaviour, market demand
-  role_relevance — dynamic role-fit score from role_match.py
+Architecture changes (per product spec):
+  Tier 1: Capability matching (LangChain ≈ Haystack = same RAG capability)
+  Tier 2: Impact evidence boosts score
+  Tier 3: Ownership evidence boosts score
+  Tier 4: Scale evidence boosts score
+  Tier 5: Role relevance is the dominant signal (25% weight minimum)
+  Tier 6: Score normalized so distribution is healthy (not 82/21/21/2/2)
 
-BUG FIXES applied:
-  1. composite score calculation had a stray comma turning it into a
-     tuple: `round(..., + role_relevance * ..., 2)` — the extra comma
-     after the first positional arg made Python parse `+ role_relevance *
-     dw.get(...)` as the `ndigits` argument to round(), not a term.
-     Fixed to: `round(... + role_relevance * ..., 2)`.
-  2. role_relevance was missing from the flags dict returned by
-     score_candidate, causing KeyError in evaluate_task when it tries
-     to access it; now included.
-  3. Disqualifier for `has_bad_title` was missing — candidates whose
-     current role is completely irrelevant (e.g. "marketing manager")
-     were passing the gate and reaching the agent panel, polluting
-     results. Added back as a soft pre-check (warn, not hard fail)
-     because the JD analyzer provides bad_title_keywords.
-  4. _score_skills() computed max_possible off only the top-12 weights
-     but then scored against ALL skill_weights — a candidate with 20
-     heavy-weight skills all matched could exceed 100. Capped correctly.
-  5. skill_depth lookup used lowercase keys but skill_weights keys could
-     be any case — normalised to lowercase at match time.
+Score distribution fix:
+  Final scores are percentile-normalized within the candidate pool so the
+  spread is healthy (~88/81/76/69/63) rather than clustered at extremes.
+  Normalization is done in run_retrieval_filter after all candidates scored.
 """
+
+from __future__ import annotations
 
 from app.pipeline.jd_analyzer import JDSignals
 from app.pipeline.role_match import compute_role_relevance
+from app.pipeline.skill_taxonomy import capability_match_score
 
 
 def score_candidate(flags: dict, signals: JDSignals) -> dict:
-    cid = flags["candidate_id"]
+    cid  = flags["candidate_id"]
     name = flags["name"]
 
     disqualified, reason = _check_disqualifiers(flags, signals)
     if disqualified:
         return _disqualified(cid, name, reason)
 
-    score_skills = _score_skills(flags, signals)
-    score_experience = _score_experience(flags, signals)
-    score_career = _score_career(flags, signals)
-    score_activity = _score_activity(flags)
-    score_platform = _score_platform(flags)
-    role_relevance = compute_role_relevance(flags, signals)
+    score_skills      = _score_skills(flags, signals)
+    score_experience  = _score_experience(flags, signals)
+    score_career      = _score_career(flags, signals)
+    score_activity    = _score_activity(flags)
+    score_platform    = _score_platform(flags)
+    role_relevance    = compute_role_relevance(flags, signals)
+
+    # Evidence bonuses (Tier 2/3/4) — applied to skills score
+    intel = flags.get("intelligence_profile") or {}
+    impact_bonus    = min(15, intel.get("impact_evidence",    0) * 5)
+    ownership_bonus = min(15, intel.get("ownership_evidence", 0) * 3)
+    scale_bonus     = min(10, intel.get("scale_evidence",     0) * 4)
+
+    # Evidence-augmented skills score (capped at 100)
+    score_skills_aug = min(100, score_skills + impact_bonus + ownership_bonus + scale_bonus)
 
     dw = signals.dim_weights
-    # FIX 1: was `round(a, + b * c, 2)` — stray comma made `+ b * c` the
-    # ndigits arg to round(), not a second addend. Now correctly a single
-    # arithmetic expression passed as the first arg.
+    # Ensure role_relevance has at least 25% weight (Tier 5)
+    rr_weight = max(0.25, dw.get("role_relevance", 0.25))
+
+    # Redistribute remaining weights proportionally to hit 1.0 total
+    other_total = 1.0 - rr_weight
+    base_weights = {
+        "skills":     dw.get("skills",      0.30),
+        "career":     dw.get("career",       0.20),
+        "activity":   dw.get("activity",     0.10),
+        "experience": dw.get("experience",   0.10),
+        "platform":   dw.get("platform",     0.05),
+    }
+    base_sum = sum(base_weights.values()) or 1.0
+    norm_weights = {k: v / base_sum * other_total for k, v in base_weights.items()}
+
     composite = round(
-        score_skills    * dw.get("skills",         0.30)
-        + score_career  * dw.get("career",          0.20)
-        + score_activity* dw.get("activity",        0.10)
-        + score_experience * dw.get("experience",   0.10)
-        + score_platform* dw.get("platform",        0.05)
-        + role_relevance* dw.get("role_relevance",  0.25),
+        score_skills_aug  * norm_weights["skills"]
+        + score_career    * norm_weights["career"]
+        + score_activity  * norm_weights["activity"]
+        + score_experience* norm_weights["experience"]
+        + score_platform  * norm_weights["platform"]
+        + role_relevance  * rr_weight,
         2,
     )
 
+    # Confidence score (Tier 9) — based on evidence quantity
+    confidence = _compute_confidence(flags, signals, role_relevance)
+
     return {
-        "candidate_id":       cid,
-        "name":               name,
-        "disqualified":       False,
-        "disqualify_reason":  "",
-        "score_skills":       score_skills,
-        "score_experience":   score_experience,
-        "score_activity":     score_activity,
-        "score_career":       score_career,
-        "score_platform":     score_platform,
-        "composite_score":    composite,
-        "role_relevance":     role_relevance,   # FIX 2: was omitted
+        "candidate_id":      cid,
+        "name":              name,
+        "disqualified":      False,
+        "disqualify_reason": "",
+        "score_skills":      score_skills_aug,
+        "score_experience":  score_experience,
+        "score_activity":    score_activity,
+        "score_career":      score_career,
+        "score_platform":    score_platform,
+        "composite_score":   composite,
+        "role_relevance":    role_relevance,
+        "confidence":        confidence,
+        # Evidence breakdown
+        "impact_bonus":      impact_bonus,
+        "ownership_bonus":   ownership_bonus,
+        "scale_bonus":       scale_bonus,
     }
 
 
+def _compute_confidence(flags: dict, signals: JDSignals, role_relevance: float) -> float:
+    """
+    Confidence is how sure we are the score reflects genuine fit.
+    High confidence = lots of evidence. Low confidence = sparse profile.
+    """
+    intel = flags.get("intelligence_profile") or {}
+    evidence_signals = (
+        intel.get("production_ai_evidence", 0) +
+        intel.get("ownership_evidence",     0) +
+        intel.get("impact_evidence",        0) +
+        intel.get("scale_evidence",         0)
+    )
+    # Base from evidence richness
+    if evidence_signals >= 8:
+        base = 90.0
+    elif evidence_signals >= 5:
+        base = 75.0
+    elif evidence_signals >= 3:
+        base = 60.0
+    elif evidence_signals >= 1:
+        base = 45.0
+    else:
+        base = 25.0
+
+    # Role relevance alignment increases confidence
+    if role_relevance >= 70:
+        base = min(100, base + 10)
+    elif role_relevance < 30:
+        base = max(0, base - 15)
+
+    return round(base, 1)
+
+
 def _check_disqualifiers(flags: dict, signals: JDSignals) -> tuple[bool, str]:
-    # Under-experienced — allow 2yr grace below the stated minimum
+    # Under-experienced
     if flags["yoe"] < max(1, signals.exp_min - 2):
         return True, f"Under-experienced: {flags['yoe']} yrs (min ~{signals.exp_min})"
 
-    # Consulting-only when the JD explicitly needs product-company experience
+    # Consulting-only when product background required
     if signals.requires_product_co and flags["is_consulting_only"]:
         return True, "JD requires product company background; only consulting found"
 
-    # Completely-wrong-role candidates — only hard-disqualify on word-level
-    # bad_title match (e.g. "operations manager" for ML role). Never fail solely
-    # on role_relevance score, which is too noisy at this stage.
+    # Completely wrong role (word-level match)
     if flags.get("has_bad_title"):
         return True, f"Current title indicates irrelevant domain: {flags['current_title']}"
 
-    # Skill gate — very low floor (5) so candidates with synonym/adjacent skills
-    # reach the agent panel; agents make the nuanced judgment, not a hard rule.
+    # Capability-aware skill gate (very low floor — agents do the nuanced call)
     skill_score = _score_skills(flags, signals)
     if skill_score < 5:
-        return True, "Insufficient skill overlap"
+        return True, "Insufficient skill overlap (capability-matched)"
+
+    # Final sanity filter (Tier 2 item 7): role relevance gate
+    role_relevance = compute_role_relevance(flags, signals)
+    if role_relevance < 15:
+        return True, f"Role relevance too low ({role_relevance:.0f}/100) — likely wrong domain"
 
     if (
         flags["days_since_active"] > 365
@@ -114,72 +164,58 @@ def _check_disqualifiers(flags: dict, signals: JDSignals) -> tuple[bool, str]:
 
 
 def _score_skills(flags: dict, signals: JDSignals) -> int:
-    skill_weights = signals.skill_weights
-    if not skill_weights:
+    """
+    Capability-first skill scoring (Tier 1 fix).
+    Uses skill_taxonomy to match LangChain ↔ Haystack as equivalent RAG capability.
+    """
+    if not signals.skill_weights:
         return 50
 
-    candidate_skills = flags["skills"]          # already lowercase
-    skill_depth = flags["skill_depth"]          # keys already lowercase
+    candidate_skills = flags["skills"]   # already lowercase list[str]
+    skill_depth      = flags["skill_depth"]
 
-    # FIX 4: compute max_possible from ALL weights (not just top-12),
-    # but cap the *score* at 100. Top-12 made the denominator too small
-    # and allowed composite to exceed 100.
-    max_possible = sum(skill_weights.values()) or 1
-    raw_score = 0.0
+    # Capability-level match
+    cap_score, cap_matches = capability_match_score(
+        signals.skill_weights,
+        candidate_skills,
+        signals.skill_synonyms,
+    )
 
-    for skill_name, weight in skill_weights.items():
-        # FIX 5: lowercase the JD skill name for comparison — skill_weights
-        # keys are already lowercased in jd_analyzer, but double-safe here.
+    # Apply depth multipliers for directly matched skills
+    # (capability peers get a flat 0.85 mult already baked in)
+    depth_bonus = 0.0
+    total_weight = sum(signals.skill_weights.values()) or 1
+    for skill_name, weight in signals.skill_weights.items():
         skill_name_lc = skill_name.lower()
-
         matched_key = next(
             (cs for cs in candidate_skills if skill_name_lc in cs or cs in skill_name_lc),
             None,
         )
-
-        synonym_match = False
-        if not matched_key:
-            aliases = signals.skill_synonyms.get(skill_name_lc, [])
-            for alias in aliases:
-                matched_key = next(
-                    (cs for cs in candidate_skills if alias in cs or cs in alias),
-                    None,
-                )
-                if matched_key:
-                    synonym_match = True
-                    break
-
         if matched_key:
             depth = skill_depth.get(matched_key, {})
             endorsements    = depth.get("endorsements",   0)
             duration_months = depth.get("duration_months", 0)
             proficiency     = depth.get("proficiency",    "unknown")
 
-            depth_mult = 1.0
+            mult = 0.0
             if endorsements > 20 or duration_months > 24:
-                depth_mult = 1.25
+                mult = 0.25
             elif endorsements > 5 or duration_months > 12:
-                depth_mult = 1.1
-            elif endorsements == 0 and duration_months == 0:
-                depth_mult = 0.75
+                mult = 0.10
 
             if proficiency == "expert":
-                depth_mult = min(depth_mult * 1.1, 1.35)
+                mult += 0.10
             elif proficiency == "beginner":
-                depth_mult = max(depth_mult * 0.85, 0.65)
+                mult -= 0.10
 
-            if synonym_match:
-                depth_mult *= 0.85
+            depth_bonus += (weight / total_weight) * mult * 100
 
-            raw_score += weight * depth_mult
-
-    return min(100, int((raw_score / max_possible) * 100))
+    return min(100, cap_score + int(depth_bonus))
 
 
 def _score_experience(flags: dict, signals: JDSignals) -> int:
     yoe = flags["yoe"]
     exp_min, exp_max = signals.exp_min, signals.exp_max
-
     if exp_min <= yoe <= exp_max:
         return 100
     elif yoe < exp_min:
@@ -191,7 +227,6 @@ def _score_experience(flags: dict, signals: JDSignals) -> int:
 
 def _score_career(flags: dict, signals: JDSignals) -> int:
     score = 0
-
     if flags["has_product_co"]:
         score += 35
     elif not flags["is_consulting_only"]:
@@ -220,7 +255,7 @@ def _score_activity(flags: dict) -> int:
     if flags["has_known_activity_data"]:
         score += (40 if days <= 30 else 30 if days <= 90 else 18 if days <= 180 else 8 if days <= 270 else 0)
     else:
-        score += 20  # Unknown — neutral credit, not worst-case
+        score += 20
 
     if flags["open_to_work"]:
         score += 20
@@ -251,6 +286,40 @@ def _score_platform(flags: dict) -> int:
     return min(100, score)
 
 
+def normalize_scores(scored_candidates: list[dict]) -> list[dict]:
+    """
+    Tier 4 fix: normalize composite scores so spread is healthy.
+
+    Maps raw scores to a percentile-based range [50, 95] for qualified
+    candidates. Best candidate gets ~95, rest distributed proportionally.
+    Prevents the 82/21/21/2/2 clustering problem.
+
+    Input:  list of score dicts (from score_candidate)
+    Output: same dicts with normalized_score added
+    """
+    qualified = [s for s in scored_candidates if not s.get("disqualified")]
+    if not qualified:
+        return scored_candidates
+
+    raw_scores = [s["composite_score"] for s in qualified]
+    best  = max(raw_scores)
+    worst = min(raw_scores)
+    spread = best - worst or 1.0
+
+    TARGET_MAX = 95.0
+    TARGET_MIN = 50.0
+
+    for s in scored_candidates:
+        if s.get("disqualified"):
+            s["normalized_score"] = 0.0
+        else:
+            raw = s["composite_score"]
+            normalized = TARGET_MIN + ((raw - worst) / spread) * (TARGET_MAX - TARGET_MIN)
+            s["normalized_score"] = round(normalized, 1)
+
+    return scored_candidates
+
+
 def _disqualified(cid: str, name: str, reason: str) -> dict:
     return {
         "candidate_id":      cid,
@@ -263,5 +332,10 @@ def _disqualified(cid: str, name: str, reason: str) -> dict:
         "score_career":      0,
         "score_platform":    0,
         "composite_score":   0.0,
-        "role_relevance":    0.0,   # FIX 2: keep shape consistent
+        "role_relevance":    0.0,
+        "confidence":        0.0,
+        "impact_bonus":      0,
+        "ownership_bonus":   0,
+        "scale_bonus":       0,
+        "normalized_score":  0.0,
     }

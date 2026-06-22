@@ -1,289 +1,299 @@
 """
 pipeline/intelligence_profile.py
 ──────────────────────────────────
-Lightweight recruiter-style evidence extraction.
+Evidence-first candidate intelligence extraction.
 
-BUG FIXES applied:
-  1. Career trajectory was built in REVERSE chronological order because
-     career_history is stored most-recent-first — reversed to show oldest→
-     newest so the trajectory reads as progression, not regression.
-  2. ir_evidence and ownership lists were capped at 10 each but the
-     full descriptions (250 chars each) were appended on EVERY job that
-     matched ANY term — deduplication added so we never repeat the same
-     job twice.
-  3. The function signature was missing type hints and the return dict
-     used string-typed evidence but agents expected list[str] — enforced.
-  4. ai_terms contained "search" which is far too generic and matched
-     customer-support descriptions ("search for tickets"). Tightened.
-  5. leadership_terms missed "staff engineer" and "principal engineer"
-     detection because those are multi-word and the simple `in desc`
-     check works, but "lead" also matches "leadership", "led", "leading"
-     by substring — deduplicated hit counting.
+Architecture shift (per product spec Tier 6):
+  OLD:  Resume → Score
+  NEW:  Resume → Evidence Extraction → Intelligence Profile → Ranking
+
+The profile is the canonical representation every downstream component
+(agents, scoring, retrieval) works from. It surfaces:
+
+  1. Impact evidence    — quantified outcomes ("improved CTR by 18%")
+  2. Ownership evidence — builder signals ("built", "designed", "led")
+  3. Scale evidence     — magnitude signals ("50M users", "10TB")
+  4. Capability evidence — production AI/ML signals
+  5. Leadership evidence — mentoring / team-leading signals
+  6. Why selected / why rejected hints — pre-computed for trust layer
 """
 
 from __future__ import annotations
+import re
+
+
+# ── Signal term lists ────────────────────────────────────────────────────
+
+_IMPACT_PATTERNS = [
+    # Percentage improvements
+    r"\b(\d+[\.,]?\d*)\s*%\b",
+    # Revenue / scale numbers with units
+    r"\$\s*\d+[\.,]?\d*\s*(k|m|b|million|billion|thousand)?\b",
+    r"\b\d+[\.,]?\d*\s*(million|billion|thousand|m\b|b\b|k\b)",
+    # Explicit improvement verbs near numbers
+    r"(increased|improved|reduced|optimized|saved|generated|scaled|boosted|grew|doubled|tripled)\s.*?\d",
+]
+_IMPACT_VERBS = [
+    "increased", "improved", "reduced", "optimized", "saved",
+    "generated", "scaled", "boosted", "grew", "doubled", "tripled",
+    "decreased", "accelerated", "cut", "lifted", "raised",
+]
+
+_OWNERSHIP_TERMS = [
+    "built", "designed", "led", "owned", "architected", "launched",
+    "shipped", "implemented", "created", "developed", "responsible for",
+    "drove", "spearheaded", "founded", "initiated", "established",
+    "authored", "engineered", "constructed",
+]
+
+_SCALE_PATTERNS = [
+    r"\b\d+\s*m(illion)?\s*users?\b",
+    r"\b\d+\s*b(illion)?\s*users?\b",
+    r"\b\d+[mk]\s*(users?|customers?|requests?|transactions?|events?|records?)\b",
+    r"\b(100k|500k|1m|10m|100m|1b)\b",
+    r"\b\d+\s*tb\b",
+    r"\bhigh\s*(scale|traffic|availability|throughput)\b",
+    r"\b(at scale|large scale|production scale|planet.?scale)\b",
+    r"\b(million|billions?)\s+(of)?\s*(users?|events?|records?|transactions?)\b",
+    r"\bqps\b|\btps\b",
+    r"\b\d+\s*qps\b",
+    r"\b(petabyte|terabyte|tb|pb)\b",
+]
+
+_AI_TERMS = [
+    "llm", "transformer", "rag", "retrieval", "ranking",
+    "recommendation", "embedding", "vector", "faiss", "pinecone",
+    "qdrant", "milvus", "bm25", "xgboost", "fine tuning", "fine-tuning",
+    "inference", "semantic search", "neural", "sentence transformer",
+    "hugging face", "language model", "information retrieval",
+    "elasticsearch", "opensearch", "haystack", "weaviate", "chromadb",
+    "pytorch", "tensorflow", "deep learning", "machine learning",
+    "generative ai", "diffusion", "stable diffusion", "gpt",
+    "chatgpt", "openai", "anthropic", "gemini", "mistral",
+]
+
+_LEADERSHIP_TERMS = [
+    "mentor", "mentored", "mentoring", "team lead", "lead engineer",
+    "staff engineer", "principal engineer", "managed a team",
+    "lead a team", "senior manager", "engineering manager", "tech lead",
+    "director", "vp of engineering", "head of", "grew the team",
+    "hired", "built the team", "managed engineers",
+]
+
+_BUILD_VERBS   = ["built", "created", "architected", "designed", "implemented", "developed", "engineered"]
+_SHIP_VERBS    = ["shipped", "launched", "deployed", "released", "delivered", "productionized", "rolled out"]
+_SCALE_VERBS   = ["scaled", "optimized", "improved performance", "reduced latency", "handled", "serving"]
+_LEAD_VERBS    = ["led", "managed", "mentored", "grew", "hired", "organized", "coordinated"]
+
+
+def _has_impact(desc: str) -> tuple[bool, list[str]]:
+    """Detect quantified impact in a job description. Returns (found, snippets)."""
+    desc_lower = desc.lower()
+    snippets: list[str] = []
+    for verb in _IMPACT_VERBS:
+        if verb in desc_lower:
+            # Grab the sentence containing the verb
+            for sentence in re.split(r"[.!?\n]", desc):
+                if verb in sentence.lower() and re.search(r"\d", sentence):
+                    snippets.append(sentence.strip()[:200])
+                    break
+    # Also catch bare % patterns
+    for m in re.finditer(r"\b\d+[\.,]?\d*\s*%", desc):
+        start = max(0, m.start() - 60)
+        snippets.append(desc[start:m.end() + 60].strip()[:200])
+    return bool(snippets), list(dict.fromkeys(snippets))[:5]   # dedup, cap 5
+
+
+def _has_scale(desc: str) -> tuple[bool, list[str]]:
+    """Detect scale signals. Returns (found, snippets)."""
+    desc_lower = desc.lower()
+    snippets: list[str] = []
+    for pattern in _SCALE_PATTERNS:
+        for m in re.finditer(pattern, desc_lower):
+            start = max(0, m.start() - 50)
+            snippets.append(desc[start:m.end() + 80].strip()[:200])
+    return bool(snippets), list(dict.fromkeys(snippets))[:5]
 
 
 def build_candidate_intelligence_profile(candidate: dict) -> dict:
     """
-    Lightweight recruiter-style evidence extraction. Returns structured
-    signals consumed by all three specialist agents. Numeric scores let
-    agents reason quantitatively rather than reading raw resume text.
-    """
-    career: list[dict] = list(reversed(candidate.get("career_history", [])))
-    skills: list[str] = [s.get("name", "") for s in candidate.get("skills", [])]
+    Evidence-first candidate profile. Every downstream component
+    (agents, scoring, retrieval) works from this structure — not from
+    raw resume text.
 
-    ir_evidence:    list[str] = []
-    ownership:      list[str] = []
-    seen_jobs_ir:   set[int]  = set()
-    seen_jobs_own:  set[int]  = set()
+    Schema
+    ──────
+    production_ai_evidence  int   jobs with AI/ML signals
+    ownership_evidence      int   jobs with builder signals
+    scale_evidence          int   jobs with scale/magnitude signals
+    impact_evidence         int   jobs with quantified outcomes
+    leadership_evidence     int   jobs with leadership signals
+    impact_score            int   weighted score from impact signals (0-100)
+    ownership_score         int   weighted score from ownership signals (0-100)
+    evidence_score          int   composite evidence score
+    ir_ml_evidence          list  career snippets showing AI/ML work
+    ownership_signals       list  career snippets showing builder language
+    scale_signals           list  career snippets showing scale
+    impact_signals          list  career snippets with numbers/outcomes
+    key_skills              list  candidate's declared skills
+    career_trajectory       str   oldest→newest title progression
+    built_count             int   jobs with build verbs
+    shipped_count           int   jobs with ship verbs
+    scaled_count            int   jobs with scale verbs
+    led_count               int   jobs with lead verbs
+    why_selected            list  pre-computed recruiter trust signals
+    why_rejected            list  pre-computed gaps
+    """
+    # career_history is stored most-recent-first → reverse for oldest→newest
+    career: list[dict] = list(reversed(candidate.get("career_history", [])))
+    skills: list[str]  = [s.get("name", "") for s in candidate.get("skills", []) if s.get("name")]
+
+    # -- evidence containers --
+    ir_ml_evidence:   list[str] = []
+    ownership_signals: list[str] = []
+    scale_signals:    list[str] = []
+    impact_signals:   list[str] = []
+
+    seen_ir:    set[int] = set()
+    seen_own:   set[int] = set()
 
     production_ai_evidence = 0
     ownership_evidence     = 0
     scale_evidence         = 0
+    impact_evidence        = 0
     leadership_evidence    = 0
 
-    # Evidence verb counts — let agents reason with "built=4, shipped=3"
-    built_count    = 0
-    shipped_count  = 0
-    scaled_count   = 0
-    led_count      = 0
+    built_count   = 0
+    shipped_count = 0
+    scaled_count  = 0
+    led_count     = 0
 
-    ai_terms = [
-        "llm", "transformer", "rag", "retrieval", "ranking",
-        "recommendation", "embedding", "vector", "faiss", "pinecone",
-        "qdrant", "milvus", "bm25", "xgboost", "fine tuning", "fine-tuning",
-        "inference", "semantic search", "neural", "sentence transformer",
-        "hugging face", "language model", "information retrieval",
-        "elasticsearch", "opensearch", "haystack", "weaviate", "chromadb",
-    ]
-
-    ownership_terms = [
-        "led", "owned", "built", "designed", "architected", "implemented",
-        "created", "developed", "shipped", "responsible for", "drove",
-        "launched", "spearheaded",
-    ]
-
-    scale_terms = [
-        "million", "millions", "100k", "1m", "10m", "high traffic",
-        "high scale", "distributed", "real time", "large scale", "at scale",
-        "production", "prod", "serving", "qps", "latency",
-    ]
-
-    leadership_terms = [
-        "mentor", "mentored", "team lead", "lead engineer", "staff engineer",
-        "principal engineer", "managed a team", "lead a team", "senior manager",
-        "engineering manager", "tech lead",
-    ]
-
-    # Verb-level evidence (for evidence_score)
-    build_verbs  = ["built", "created", "architected", "designed", "implemented", "developed"]
-    ship_verbs   = ["shipped", "launched", "deployed", "released", "delivered", "productionized"]
-    scale_verbs  = ["scaled", "optimized", "improved performance", "reduced latency", "handled"]
-    lead_verbs   = ["led", "managed", "mentored", "grew", "hired", "organized"]
+    # -- evidence scoring accumulators --
+    impact_score_raw    = 0
+    ownership_score_raw = 0
 
     for idx, job in enumerate(career):
-        desc = job.get("description", "").lower()
+        raw_desc = job.get("description", "")
+        desc     = raw_desc.lower()
 
-        if idx not in seen_jobs_ir:
-            for term in ai_terms:
+        # ── AI/ML evidence ────────────────────────────────────────────
+        if idx not in seen_ir:
+            for term in _AI_TERMS:
                 if term in desc:
                     production_ai_evidence += 1
-                    seen_jobs_ir.add(idx)
-                    snippet = job.get("description", "")[:250]
-                    if snippet and snippet not in ir_evidence:
-                        ir_evidence.append(snippet)
+                    seen_ir.add(idx)
+                    snippet = raw_desc[:300]
+                    if snippet and snippet not in ir_ml_evidence:
+                        ir_ml_evidence.append(snippet)
                     break
 
-        if idx not in seen_jobs_own:
-            for term in ownership_terms:
+        # ── Ownership evidence ────────────────────────────────────────
+        if idx not in seen_own:
+            for term in _OWNERSHIP_TERMS:
                 if term in desc:
                     ownership_evidence += 1
-                    seen_jobs_own.add(idx)
-                    snippet = job.get("description", "")[:250]
-                    if snippet and snippet not in ownership:
-                        ownership.append(snippet)
+                    seen_own.add(idx)
+                    snippet = raw_desc[:300]
+                    if snippet and snippet not in ownership_signals:
+                        ownership_signals.append(snippet)
+                    ownership_score_raw += 15     # Tier 3: +15 per ownership job
                     break
 
-        if any(term in desc for term in scale_terms):
+        # ── Scale evidence ────────────────────────────────────────────
+        has_s, s_snippets = _has_scale(raw_desc)
+        if has_s:
             scale_evidence += 1
+            scale_signals.extend(sn for sn in s_snippets if sn not in scale_signals)
 
-        if any(term in desc for term in leadership_terms):
+        # ── Impact evidence ───────────────────────────────────────────
+        has_i, i_snippets = _has_impact(raw_desc)
+        if has_i:
+            impact_evidence += 1
+            impact_signals.extend(sn for sn in i_snippets if sn not in impact_signals)
+            impact_score_raw += 15                # Tier 2: +15 per impactful job
+
+        # ── Leadership evidence ───────────────────────────────────────
+        if any(term in desc for term in _LEADERSHIP_TERMS):
             leadership_evidence += 1
 
-        # Evidence verb counts — one increment per job, not per occurrence
-        if any(v in desc for v in build_verbs):
+        # ── Verb counts ───────────────────────────────────────────────
+        if any(v in desc for v in _BUILD_VERBS):
             built_count += 1
-        if any(v in desc for v in ship_verbs):
+        if any(v in desc for v in _SHIP_VERBS):
             shipped_count += 1
-        if any(v in desc for v in scale_verbs):
+        if any(v in desc for v in _SCALE_VERBS):
             scaled_count += 1
-        if any(v in desc for v in lead_verbs):
+        if any(v in desc for v in _LEAD_VERBS):
             led_count += 1
 
-    # Evidence score: weighted sum matching recruiter priorities
-    # built/shipped = execution proof; scaled/led = seniority proof
+    # ── Composite evidence score ──────────────────────────────────────────
     evidence_score = (
         built_count   * 5
         + shipped_count * 5
         + scaled_count  * 8
         + led_count     * 8
+        + impact_evidence  * 10
+        + scale_evidence   * 6
     )
 
+    # Normalize impact/ownership scores to 0-100
+    impact_score    = min(100, impact_score_raw)
+    ownership_score = min(100, ownership_score_raw)
+
+    # ── Career trajectory (oldest → newest) ──────────────────────────────
     career_trajectory = " → ".join(
         j.get("title", "") for j in career if j.get("title")
     )
 
+    # ── Why selected / why rejected (Tier 5 trust) ───────────────────────
+    why_selected: list[str] = []
+    why_rejected: list[str] = []
+
+    if production_ai_evidence >= 2:
+        why_selected.append(f"Production AI/ML experience in {production_ai_evidence} roles")
+    if ownership_evidence >= 2:
+        why_selected.append(f"Strong builder signals — ownership in {ownership_evidence} roles")
+    if impact_evidence >= 1:
+        why_selected.append(f"Quantified impact in {impact_evidence} role(s)")
+    if scale_evidence >= 1:
+        why_selected.append(f"Scale evidence: worked at meaningful system scale")
+    if leadership_evidence >= 1:
+        why_selected.append(f"Leadership signals in {leadership_evidence} role(s)")
+
+    if production_ai_evidence == 0:
+        why_rejected.append("No clear AI/ML production experience found")
+    if ownership_evidence == 0:
+        why_rejected.append("Descriptions lack builder/ownership language")
+    if impact_evidence == 0:
+        why_rejected.append("No quantified outcomes found in career descriptions")
+    if scale_evidence == 0:
+        why_rejected.append("No evidence of working at meaningful scale")
+
     return {
-        "ir_ml_evidence":         ir_evidence[:10],
-        "ownership_signals":      ownership[:10],
-        "career_trajectory":      career_trajectory,
-        "key_skills":             skills[:30],
+        # Evidence counts
         "production_ai_evidence": production_ai_evidence,
         "ownership_evidence":     ownership_evidence,
         "scale_evidence":         scale_evidence,
+        "impact_evidence":        impact_evidence,
         "leadership_evidence":    leadership_evidence,
-        # Verb-level evidence counts
+        # Evidence scores
+        "impact_score":           impact_score,
+        "ownership_score":        ownership_score,
+        "evidence_score":         evidence_score,
+        # Evidence snippets
+        "ir_ml_evidence":         ir_ml_evidence[:10],
+        "ownership_signals":      ownership_signals[:10],
+        "scale_signals":          scale_signals[:10],
+        "impact_signals":         impact_signals[:10],
+        # Metadata
+        "key_skills":             skills[:30],
+        "career_trajectory":      career_trajectory,
+        # Verb counts
         "built_count":            built_count,
         "shipped_count":          shipped_count,
         "scaled_count":           scaled_count,
         "led_count":              led_count,
-        "evidence_score":         evidence_score,
-    }
-
-    ir_evidence:    list[str] = []
-    ownership:      list[str] = []
-    seen_jobs_ir:   set[int]  = set()
-    seen_jobs_own:  set[int]  = set()
-
-    production_ai_evidence = 0
-    ownership_evidence     = 0
-    scale_evidence         = 0
-    leadership_evidence    = 0
-
-    # FIX 4: removed over-broad "search" (matched customer-support queries,
-    # help-desk "search for tickets", etc.). Kept domain-specific signals.
-    ai_terms = [
-        "llm",
-        "transformer",
-        "rag",
-        "retrieval",
-        "ranking",
-        "recommendation",
-        "embedding",
-        "vector",
-        "faiss",
-        "pinecone",
-        "qdrant",
-        "milvus",
-        "bm25",
-        "xgboost",
-        "fine tuning",
-        "fine-tuning",
-        "inference",
-        "semantic search",
-        "neural",
-        "sentence transformer",
-        "hugging face",
-        "language model",
-        "information retrieval",
-    ]
-
-    ownership_terms = [
-        "led",
-        "owned",
-        "built",
-        "designed",
-        "architected",
-        "implemented",
-        "created",
-        "developed",
-        "shipped",
-        "responsible for",
-        "drove",
-        "launched",
-        "spearheaded",
-    ]
-
-    scale_terms = [
-        "million",
-        "millions",
-        "100k",
-        "1m",
-        "10m",
-        "high traffic",
-        "high scale",
-        "distributed",
-        "real time",
-        "large scale",
-        "at scale",
-    ]
-
-    # FIX 5: multi-word leadership terms work fine with `in desc` but
-    # bare "lead" also fires on "leadership" in descriptions — check whole
-    # words where possible and count job, not occurrences.
-    leadership_terms = [
-        "mentor",
-        "mentored",
-        "team lead",
-        "lead engineer",
-        "staff engineer",
-        "principal engineer",
-        "managed a team",
-        "lead a team",
-        "senior manager",
-        "engineering manager",
-        "tech lead",
-    ]
-
-    for idx, job in enumerate(career):
-        desc = job.get("description", "").lower()
-
-        # IR / ML evidence — one count per job, one evidence snippet per job
-        if idx not in seen_jobs_ir:
-            for term in ai_terms:
-                if term in desc:
-                    production_ai_evidence += 1
-                    seen_jobs_ir.add(idx)
-                    snippet = job.get("description", "")[:250]
-                    if snippet and snippet not in ir_evidence:
-                        ir_evidence.append(snippet)
-                    break
-
-        # Ownership evidence — one count per job
-        if idx not in seen_jobs_own:
-            for term in ownership_terms:
-                if term in desc:
-                    ownership_evidence += 1
-                    seen_jobs_own.add(idx)
-                    snippet = job.get("description", "")[:250]
-                    if snippet and snippet not in ownership:
-                        ownership.append(snippet)
-                    break
-
-        # Scale evidence — one count per job
-        if any(term in desc for term in scale_terms):
-            scale_evidence += 1
-
-        # Leadership evidence — one count per job
-        if any(term in desc for term in leadership_terms):
-            leadership_evidence += 1
-
-    # FIX 1: career displayed oldest→newest after the reverse above,
-    # so this join now reads as a proper growth trajectory.
-    career_trajectory = " → ".join(
-        j.get("title", "")
-        for j in career
-        if j.get("title")
-    )
-
-    return {
-        "ir_ml_evidence":       ir_evidence[:10],
-        "ownership_signals":    ownership[:10],
-        "career_trajectory":    career_trajectory,
-        "key_skills":           skills[:30],
-        "production_ai_evidence": production_ai_evidence,
-        "ownership_evidence":   ownership_evidence,
-        "scale_evidence":       scale_evidence,
-        "leadership_evidence":  leadership_evidence,
+        # Trust layer
+        "why_selected":           why_selected,
+        "why_rejected":           why_rejected,
     }

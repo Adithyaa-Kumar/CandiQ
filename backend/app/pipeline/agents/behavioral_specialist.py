@@ -3,25 +3,9 @@ pipeline/agents/behavioral_specialist.py
 ────────────────────────────────────────────
 Agent 3: Behavioral & Platform Signal Specialist.
 
-Focus: open-source activity, communication clarity in profile text,
-ownership and initiative signals from role descriptions, and
-soft-skill indicators detectable from the profile.
-
-BUG FIXES applied:
-  1. Same oversized prompt problem — raw evidence blocks removed.
-  2. Prompt asked the agent to judge "communication clarity" but gave it
-     a structured profile blob that's already been formatted — agents
-     can't distinguish good writing from Claude's formatting. Changed the
-     instruction to assess the CONTENT specificity (concrete numbers,
-     named systems, measurable outcomes) rather than prose quality.
-  3. Ownership and leadership weights sent as raw floats (same issue as
-     trajectory_specialist) — changed to descriptive labels.
-  4. The agent was told to "EXPLICITLY IGNORE: technical skill depth,
-     company pedigree, years of experience" but then its candidate block
-     contained all of those. Agents would always drift into scoring them.
-     Behavioral block now strips roles/titles and shows ONLY behavioral
-     signals: summary description quality, GitHub score, assessment scores,
-     and the intelligence-profile ownership/leadership counts.
+Tier 3 rewrite: sees ONLY behavioral signals — ownership language,
+initiative evidence, GitHub activity, platform engagement.
+NO technical skill depth, NO company pedigree.
 """
 
 from __future__ import annotations
@@ -60,24 +44,24 @@ LEADERSHIP EXPECTATION: __LEADERSHIP_LABEL__
 RED FLAGS TO WATCH FOR: __RED_FLAGS__
 
 Your evaluation criteria:
-1. Specificity of self-description: do they describe CONCRETE work with measurable
-   outcomes ("reduced latency by 40%", "owned the ranker from scratch to 12% revenue lift")
-   or vague buzzwords ("worked on AI solutions", "contributed to the team")?
-   Concrete descriptions score higher — they indicate genuine ownership of the work.
+1. OWNERSHIP QUALITY — does the candidate use builder language?
+   "Built X from scratch", "Owned Y end-to-end", "Led Z initiative" = HIGH ownership.
+   "Contributed to", "Helped with", "Assisted in" = LOW ownership.
+   Count their ownership_evidence jobs. More = stronger signal.
 
-2. Initiative signals: do descriptions show they PROPOSED and STARTED things, or
-   only responded to direction? Count "led", "designed", "launched", "created from scratch"
-   vs "contributed to", "helped with", "assisted in".
+2. IMPACT SPECIFICITY — do they quantify what they achieved?
+   "Improved CTR by 18%" >> "improved performance".
+   "Reduced infra cost by $2M" >> "optimized costs".
+   High impact_evidence count = candidate who measures their work.
 
-3. GitHub / open-source activity (if available): active score >30 = visible engineering
-   output outside work hours. Score 0 or unknown = neutral, not negative.
+3. INITIATIVE — did they PROPOSE and START things, or only respond to direction?
+   Look for: "launched", "designed", "created from scratch", "identified", "pioneered".
 
-4. Platform engagement: high recruiter response rate signals they're professionally
-   engaged. Very low rate (< 20%) may indicate unavailability or disinterest.
+4. PLATFORM SIGNALS — GitHub activity shows engineering output outside work hours.
+   Score > 30 = visible engineering presence. Score 0 or unknown = neutral.
+   Recruiter response rate < 20% may signal disinterest or unavailability.
 
-5. Ownership fit: see expectation above.
-
-6. Leadership fit: see expectation above.
+5. LEADERSHIP FIT — see leadership expectation above.
 
 EXPLICITLY IGNORE: technical skill names, company names, years of experience,
 education institution. Those are other agents' responsibility.
@@ -91,9 +75,9 @@ Respond ONLY with valid JSON, no markdown fences:
     {
       "candidate_id": "<id>",
       "score": <0-100>,
-      "pros": ["<short phrase>", "..."],
-      "cons": ["<short phrase>", "..."],
-      "rationale": "<1-2 sentences on behavioral fit, citing specific evidence>"
+      "pros": ["<specific behavioral strength>", "..."],
+      "cons": ["<specific behavioral gap>", "..."],
+      "rationale": "<1-2 sentences on behavioral fit, citing ownership/impact evidence counts and specific language.>"
     }
   ]
 }
@@ -103,25 +87,25 @@ Include ALL __N__ candidates.\
 
 
 def _behavioral_snippet(c: dict) -> str:
-    """
-    FIX 4: produce a behavioral-only block — no role titles, company names,
-    or skill lists that would anchor the behavioral agent on non-behavioral signals.
-    """
     profile = c.get("profile", {})
     sigs    = c.get("redrob_signals", {})
     intel   = c.get("intelligence_profile") or {}
 
     summary = profile.get("summary", "")[:400]
 
-    # Behavioral evidence from work descriptions
-    ownership_snippets  = intel.get("ownership_signals", [])
-    ownership_preview   = " | ".join(s[:120] for s in ownership_snippets[:3])
+    # Ownership language snippets
+    ownership_snippets = intel.get("ownership_signals", [])
+    ownership_preview  = " | ".join(s[:150] for s in ownership_snippets[:3])
+
+    # Impact snippets — this is behavioral evidence (they measure their work)
+    impact_snippets = intel.get("impact_signals", [])
+    impact_preview  = " | ".join(s[:150] for s in impact_snippets[:3])
 
     # Platform signals
-    gh_score    = sigs.get("github_activity_score", -1)
-    gh_str      = f"{gh_score:.0f}/100" if gh_score and gh_score > 0 else "not available"
-    resp_rate   = sigs.get("recruiter_response_rate", 0)
-    otw         = "actively looking" if sigs.get("open_to_work_flag") else "passive"
+    gh_score  = sigs.get("github_activity_score", -1)
+    gh_str    = f"{gh_score:.0f}/100" if gh_score and gh_score > 0 else "not available"
+    resp_rate = sigs.get("recruiter_response_rate", 0)
+    otw       = "actively looking" if sigs.get("open_to_work_flag") else "passive"
 
     assessment_scores = sigs.get("skill_assessment_scores", {})
     assess_str = (
@@ -130,18 +114,26 @@ def _behavioral_snippet(c: dict) -> str:
         else "none taken"
     )
 
+    why_selected = intel.get("why_selected", [])
+    why_rejected = intel.get("why_rejected", [])
+
     return (
         f"[{c.get('candidate_id', '')}]\n"
-        f"Self-summary: {summary}\n"
-        f"Ownership evidence count: {intel.get('ownership_evidence', 0)} | "
-        f"Leadership evidence count: {intel.get('leadership_evidence', 0)}\n"
-        f"Evidence verbs: built={intel.get('built_count', 0)} shipped={intel.get('shipped_count', 0)} "
-        f"scaled={intel.get('scaled_count', 0)} led={intel.get('led_count', 0)} "
-        f"→ evidence_score={intel.get('evidence_score', 0)}\n"
-        f"Sample ownership language: {ownership_preview or 'none extracted'}\n"
+        f"Self-summary: {summary}\n\n"
+        f"OWNERSHIP SIGNALS ({intel.get('ownership_evidence', 0)} roles with builder language):\n"
+        f"{ownership_preview or 'none extracted'}\n\n"
+        f"IMPACT SIGNALS ({intel.get('impact_evidence', 0)} roles with quantified outcomes):\n"
+        f"{impact_preview or 'none detected'}\n\n"
+        f"Evidence verbs: built={intel.get('built_count',0)} shipped={intel.get('shipped_count',0)} "
+        f"scaled={intel.get('scaled_count',0)} led={intel.get('led_count',0)} "
+        f"→ ownership_score={intel.get('ownership_score',0)} impact_score={intel.get('impact_score',0)}\n"
+        f"Leadership evidence: {intel.get('leadership_evidence', 0)} roles\n\n"
         f"GitHub score: {gh_str} | Job status: {otw} | "
         f"Recruiter response rate: {int(resp_rate * 100)}%\n"
-        f"Skill assessments taken: {assess_str}"
+        f"Skill assessments: {assess_str}\n\n"
+        f"Pre-computed signals:\n"
+        f"  Why strong: {'; '.join(why_selected[:3]) or 'none'}\n"
+        f"  Gaps: {'; '.join(why_rejected[:2]) or 'none'}"
     )
 
 
@@ -149,14 +141,14 @@ def build_prompt(jd_signals: JDSignals, candidates: list[dict]) -> str:
     candidate_blob = "\n\n---\n\n".join(_behavioral_snippet(c) for c in candidates)
 
     prompt = _PROMPT_TEMPLATE
-    prompt = prompt.replace("__ROLE_TITLE__",       jd_signals.role_title)
-    prompt = prompt.replace("__DOMAIN__",            jd_signals.domain)
-    prompt = prompt.replace("__COMPANY_STAGE__",     jd_signals.company_stage)
-    prompt = prompt.replace("__OWNERSHIP_LABEL__",   _ownership_label(jd_signals.ownership_weight))
-    prompt = prompt.replace("__LEADERSHIP_LABEL__",  _leadership_label(jd_signals.leadership_weight))
-    prompt = prompt.replace("__RED_FLAGS__",          ", ".join(jd_signals.red_flags) or "none specified")
-    prompt = prompt.replace("__CANDIDATES_BLOCK__",  candidate_blob)
-    prompt = prompt.replace("__N__",                 str(len(candidates)))
+    prompt = prompt.replace("__ROLE_TITLE__",      jd_signals.role_title)
+    prompt = prompt.replace("__DOMAIN__",           jd_signals.domain)
+    prompt = prompt.replace("__COMPANY_STAGE__",    jd_signals.company_stage)
+    prompt = prompt.replace("__OWNERSHIP_LABEL__",  _ownership_label(jd_signals.ownership_weight))
+    prompt = prompt.replace("__LEADERSHIP_LABEL__", _leadership_label(jd_signals.leadership_weight))
+    prompt = prompt.replace("__RED_FLAGS__",         ", ".join(jd_signals.red_flags) or "none specified")
+    prompt = prompt.replace("__CANDIDATES_BLOCK__", candidate_blob)
+    prompt = prompt.replace("__N__",                str(len(candidates)))
     return prompt
 
 
