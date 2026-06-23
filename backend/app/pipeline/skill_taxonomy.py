@@ -8,11 +8,9 @@ When scoring skill overlap we compare CAPABILITY clusters, not raw tool
 names. A JD that asks for LangChain and a candidate who knows Haystack
 both demonstrate RAG expertise — the recruiter cares about the
 capability, not the library.
-
 Usage
 ─────
   from app.pipeline.skill_taxonomy import get_capability_for_skill, CAPABILITY_CLUSTERS
-
   cap = get_capability_for_skill("haystack")     # → "retrieval_augmented_generation"
   peers = CAPABILITY_CLUSTERS[cap]               # → ["langchain", "llamaindex", ...]
 """
