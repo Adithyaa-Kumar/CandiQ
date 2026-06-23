@@ -4,36 +4,43 @@ export default {
   theme: {
     extend: {
       colors: {
-        bg: "#ffffff",
-        surface: "#f8fafc",
-        "surface-2": "#f1f5f9",
-        border: "#e2e8f0",
-        "border-2": "#cbd5e1",
-        "text-primary": "#0f172a",
-        "text-secondary": "#475569",
-        "text-tertiary": "#94a3b8",
-        accent: "#2563eb",
-        "accent-light": "#eff6ff",
-        "accent-hover": "#1d4ed8",
-        success: "#059669",
-        "success-light": "#f0fdf4",
-        warning: "#d97706",
-        "warning-light": "#fffbeb",
-        error: "#dc2626",
-        "error-light": "#fef2f2",
-        // Score colors
-        "score-high": "#059669",
-        "score-mid": "#d97706",
-        "score-low": "#dc2626",
+        // ── Base surfaces ─────────────────────────────────────────────
+        bg:         "#f8f9fb",
+        surface:    "#ffffff",
+        "surface-2":"#f1f3f7",
+
+        // ── Borders ───────────────────────────────────────────────────
+        border:     "#e5e9f0",
+
+        // ── Text ──────────────────────────────────────────────────────
+        "text-primary":   "#111827",
+        "text-secondary": "#4b5563",
+        "text-tertiary":  "#9ca3af",
+
+        // ── Brand ─────────────────────────────────────────────────────
+        accent:  "#6366f1",            // indigo-500 — primary CTA
+        "accent-light": "#eef2ff",     // indigo-50
+
+        // ── Semantic ──────────────────────────────────────────────────
+        success:       "#16a34a",      // green-700
+        "success-light":"#dcfce7",     // green-100
+        warning:       "#d97706",      // amber-600
+        "warning-light":"#fef3c7",     // amber-100
+        error:         "#dc2626",      // red-600
+        "error-light": "#fee2e2",      // red-100
       },
       fontFamily: {
-        sans: ["Inter", "system-ui", "-apple-system", "sans-serif"],
+        sans: ["Inter", "system-ui", "sans-serif"],
         mono: ["JetBrains Mono", "monospace"],
       },
       boxShadow: {
-        card: "0 1px 3px 0 rgba(0,0,0,0.08), 0 1px 2px -1px rgba(0,0,0,0.06)",
-        "card-md": "0 4px 6px -1px rgba(0,0,0,0.06), 0 2px 4px -2px rgba(0,0,0,0.04)",
-        "card-lg": "0 10px 15px -3px rgba(0,0,0,0.08), 0 4px 6px -4px rgba(0,0,0,0.04)",
+        card: "0 1px 3px 0 rgb(0 0 0 / 0.06), 0 1px 2px -1px rgb(0 0 0 / 0.04)",
+        "card-hover": "0 4px 12px 0 rgb(0 0 0 / 0.08), 0 2px 4px -2px rgb(0 0 0 / 0.04)",
+        modal: "0 20px 48px 0 rgb(0 0 0 / 0.14)",
+      },
+      borderRadius: {
+        "2xl": "16px",
+        "3xl": "24px",
       },
     },
   },

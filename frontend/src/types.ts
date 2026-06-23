@@ -1,4 +1,7 @@
 // types.ts — mirrors backend schemas exactly
+// Fields: keep in sync with app/schemas/*.py and db/models/*.py
+
+// ── Auth ──────────────────────────────────────────────────────────────────
 
 export interface User {
   id: string
@@ -13,6 +16,8 @@ export interface TokenResponse {
   refresh_token: string
   token_type: "bearer"
 }
+
+// ── Candidates ────────────────────────────────────────────────────────────
 
 export interface Candidate {
   id: string
@@ -35,6 +40,8 @@ export interface PoolStatusResponse {
   pool_id: string | null
   candidate_count: number
 }
+
+// ── Jobs ──────────────────────────────────────────────────────────────────
 
 export type JobStatus = "pending" | "running" | "completed" | "failed"
 
@@ -99,9 +106,14 @@ export interface JobResultItem {
   retrieval_method: string | null
   rule_composite_score: number | null
   consensus_score: number | null
+  // Tier 5: confidence from specialist agreement, normalized percentile score
+  confidence: number | null
+  normalized_score: number | null
   final_rank: number | null
   strengths: string[]
   risks: string[]
+  // alternatives: raw candidate_ids within the same batch
+  // the ResultsPage resolves these to names from the full results list
   alternatives: string[]
   is_disqualified: boolean
   disqualify_reason: string | null
@@ -117,6 +129,8 @@ export interface JobResultsResponse {
   shortlisted_count: number
   results: JobResultItem[]
 }
+
+// ── API error shape ──────────────────────────────────────────────────────
 
 export interface ApiError {
   detail: string | { msg: string; loc: string[] }[]

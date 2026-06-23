@@ -2,10 +2,6 @@
 schemas/job.py
 ───────────────
 Request/response models for the evaluation job lifecycle.
-
-BUG FIX: JobResultItem previously had `executive_summary` (old field name)
-instead of `strengths`, `risks`, `alternatives` — mismatched the DB model
-since migration d4c1611d96eb, causing the frontend to render blank results.
 """
 
 import uuid
@@ -47,7 +43,6 @@ class JobStatusResponse(BaseModel):
     created_at: datetime
     started_at: datetime | None
     completed_at: datetime | None
-    # Cost / performance metadata
     llm_calls: int = 0
     eval_time_seconds: float | None = None
 
@@ -62,8 +57,10 @@ class JobResultItem(BaseModel):
     retrieval_method: str | None
     rule_composite_score: float | None
     consensus_score: float | None
+    # Tier 5: surfaced to frontend
+    confidence: float | None = None
+    normalized_score: float | None = None
     final_rank: int | None
-    # FIX: was `executive_summary: str | None` — renamed columns since migration d4c1611d96eb
     strengths: list[str] = Field(default_factory=list)
     risks: list[str] = Field(default_factory=list)
     alternatives: list[str] = Field(default_factory=list)
