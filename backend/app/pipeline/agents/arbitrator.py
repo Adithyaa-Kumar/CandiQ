@@ -1,26 +1,6 @@
 """
 pipeline/agents/arbitrator.py
 ─────────────────────────────────
-Arbitrator Agent — Tier 1 Issue 4 fix: weighted consensus, not override.
-
-Architecture before this fix:
-  3 specialists → 1 arbitrator → arbitrator overwrites everything
-
-Problem:
-  One model call could contradict all three specialists with no accountability.
-  A tech score of 30 could get a consensus of 75 if the arbitrator disagreed.
-
-Architecture after this fix:
-  3 specialists → weighted vote → arbitrator can adjust within a bounded range
-
-Specifically:
-  1. Domain-specific weights (tech roles weight tech more, product roles weight traj more)
-  2. Weighted vote produces a "pre-consensus" score
-  3. Arbitrator prompt is shown the weighted vote and told it can only adjust ±15 points
-     unless there is a clearly stated hard disqualifying reason
-  4. Final confidence score reflects specialist agreement — wide spread = low confidence
-     even if the consensus score is high
-  5. Arbitrator generates strengths/risks/alternatives but cannot silently override scores
 """
 
 from __future__ import annotations
