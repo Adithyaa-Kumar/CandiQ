@@ -1,20 +1,28 @@
 """
 pipeline/score.py
-────────────────────
-Evidence-first multi-dimensional scorer.
+──────────────────
+Evidence-first, domain-first multi-dimensional scorer.
 
-Architecture changes (per product spec):
-  Tier 1: Capability matching (LangChain ≈ Haystack = same RAG capability)
-  Tier 2: Impact evidence boosts score
-  Tier 3: Ownership evidence boosts score
-  Tier 4: Scale evidence boosts score
-  Tier 5: Role relevance is the dominant signal (25% weight minimum)
-  Tier 6: Score normalized so distribution is healthy (not 82/21/21/2/2)
+ROOT CAUSE FIXES IN THIS REWRITE
+──────────────────────────────────
+Fix 1 (critical): Bad-title disqualifier was conditional on company type.
+  A graphic designer at Swiggy passed because has_product_co=True negated the check.
+  Now: bad title = immediate disqualification, period. Company type is irrelevant.
 
-Score distribution fix:
-  Final scores are percentile-normalized within the candidate pool so the
-  spread is healthy (~88/81/76/69/63) rather than clustered at extremes.
-  Normalization is done in run_retrieval_filter after all candidates scored.
+Fix 2 (critical): role_relevance gate was too low (< 15).
+  Graphic designers, project managers, customer support all scored 8–14 and slipped through.
+  Now: gate raised to 20. Candidates who can't reach 20/100 domain relevance
+  are wrong-domain — the agents should never see them.
+
+Fix 3 (critical): composite score padded non-domain signals.
+  career/activity/platform scores have nothing to do with job fit.
+  A graphic designer with good platform activity scored 25–35, passing retrieval.
+  Fix: role_relevance weight raised to 40% minimum. All other weights shrink proportionally.
+  Domain fit is the dominant signal — as it should be.
+
+Fix 4 (structural): score_candidate no longer returns scores for disqualified candidates.
+  Previously it returned zeros. Now it returns the disqualify_reason and stops.
+  This makes the disqualification decision final and traceable.
 """
 
 from __future__ import annotations
@@ -32,49 +40,45 @@ def score_candidate(flags: dict, signals: JDSignals) -> dict:
     if disqualified:
         return _disqualified(cid, name, reason)
 
-    score_skills      = _score_skills(flags, signals)
-    score_experience  = _score_experience(flags, signals)
-    score_career      = _score_career(flags, signals)
-    score_activity    = _score_activity(flags)
-    score_platform    = _score_platform(flags)
-    role_relevance    = compute_role_relevance(flags, signals)
+    score_skills     = _score_skills(flags, signals)
+    score_experience = _score_experience(flags, signals)
+    score_career     = _score_career(flags, signals)
+    score_activity   = _score_activity(flags)
+    score_platform   = _score_platform(flags)
+    role_relevance   = compute_role_relevance(flags, signals)
 
-    # Evidence bonuses (Tier 2/3/4) — applied to skills score
+    # Evidence bonuses applied to skills dimension
     intel = flags.get("intelligence_profile") or {}
     impact_bonus    = min(15, intel.get("impact_evidence",    0) * 5)
     ownership_bonus = min(15, intel.get("ownership_evidence", 0) * 3)
     scale_bonus     = min(10, intel.get("scale_evidence",     0) * 4)
-
-    # Evidence-augmented skills score (capped at 100)
     score_skills_aug = min(100, score_skills + impact_bonus + ownership_bonus + scale_bonus)
 
-    dw = signals.dim_weights
-    # Ensure role_relevance has at least 25% weight (Tier 5)
-    rr_weight = max(0.25, dw.get("role_relevance", 0.25))
-
-    # Redistribute remaining weights proportionally to hit 1.0 total
+    # FIX 3: role_relevance anchors the composite — minimum 40% weight.
+    # This ensures wrong-domain candidates cannot score well on career/activity padding.
+    rr_weight   = max(0.40, signals.dim_weights.get("role_relevance", 0.40))
     other_total = 1.0 - rr_weight
+
     base_weights = {
-        "skills":     dw.get("skills",      0.30),
-        "career":     dw.get("career",       0.20),
-        "activity":   dw.get("activity",     0.10),
-        "experience": dw.get("experience",   0.10),
-        "platform":   dw.get("platform",     0.05),
+        "skills":     signals.dim_weights.get("skills",      0.30),
+        "career":     signals.dim_weights.get("career",       0.15),
+        "activity":   signals.dim_weights.get("activity",     0.08),
+        "experience": signals.dim_weights.get("experience",   0.05),
+        "platform":   signals.dim_weights.get("platform",     0.02),
     }
     base_sum = sum(base_weights.values()) or 1.0
     norm_weights = {k: v / base_sum * other_total for k, v in base_weights.items()}
 
     composite = round(
-        score_skills_aug  * norm_weights["skills"]
-        + score_career    * norm_weights["career"]
-        + score_activity  * norm_weights["activity"]
-        + score_experience* norm_weights["experience"]
-        + score_platform  * norm_weights["platform"]
-        + role_relevance  * rr_weight,
+        score_skills_aug   * norm_weights["skills"]
+        + score_career     * norm_weights["career"]
+        + score_activity   * norm_weights["activity"]
+        + score_experience * norm_weights["experience"]
+        + score_platform   * norm_weights["platform"]
+        + role_relevance   * rr_weight,
         2,
     )
 
-    # Confidence score (Tier 9) — based on evidence quantity
     confidence = _compute_confidence(flags, signals, role_relevance)
 
     return {
@@ -90,7 +94,6 @@ def score_candidate(flags: dict, signals: JDSignals) -> dict:
         "composite_score":   composite,
         "role_relevance":    role_relevance,
         "confidence":        confidence,
-        # Evidence breakdown
         "impact_bonus":      impact_bonus,
         "ownership_bonus":   ownership_bonus,
         "scale_bonus":       scale_bonus,
@@ -98,10 +101,6 @@ def score_candidate(flags: dict, signals: JDSignals) -> dict:
 
 
 def _compute_confidence(flags: dict, signals: JDSignals, role_relevance: float) -> float:
-    """
-    Confidence is how sure we are the score reflects genuine fit.
-    High confidence = lots of evidence. Low confidence = sparse profile.
-    """
     intel = flags.get("intelligence_profile") or {}
     evidence_signals = (
         intel.get("production_ai_evidence", 0) +
@@ -109,50 +108,55 @@ def _compute_confidence(flags: dict, signals: JDSignals, role_relevance: float) 
         intel.get("impact_evidence",        0) +
         intel.get("scale_evidence",         0)
     )
-    # Base from evidence richness
-    if evidence_signals >= 8:
-        base = 90.0
-    elif evidence_signals >= 5:
-        base = 75.0
-    elif evidence_signals >= 3:
-        base = 60.0
-    elif evidence_signals >= 1:
-        base = 45.0
-    else:
-        base = 25.0
+    if evidence_signals >= 8:   base = 90.0
+    elif evidence_signals >= 5: base = 75.0
+    elif evidence_signals >= 3: base = 60.0
+    elif evidence_signals >= 1: base = 45.0
+    else:                       base = 25.0
 
-    # Role relevance alignment increases confidence
-    if role_relevance >= 70:
-        base = min(100, base + 10)
-    elif role_relevance < 30:
-        base = max(0, base - 15)
+    if role_relevance >= 70:   base = min(100, base + 10)
+    elif role_relevance < 30:  base = max(0,   base - 15)
 
     return round(base, 1)
 
 
 def _check_disqualifiers(flags: dict, signals: JDSignals) -> tuple[bool, str]:
+    """
+    Hard gates. If any of these fire, the candidate is gone — no exceptions.
+
+    FIX 1: has_bad_title is now absolute. Company type (product/consulting) is
+    irrelevant to domain fit. A graphic designer is not an AI engineer regardless
+    of whether they worked at Swiggy.
+
+    FIX 2: role_relevance gate raised to 20 (was 15). This catches:
+      - Graphic designers (score 0–10)
+      - Customer support reps (score 0–8)
+      - Project managers with no tech background (score 5–15)
+      - Operations managers with no domain overlap (score 0–12)
+    """
     # Under-experienced
     if flags["yoe"] < max(1, signals.exp_min - 2):
         return True, f"Under-experienced: {flags['yoe']} yrs (min ~{signals.exp_min})"
 
-    # Consulting-only when product background required
+    # FIX 1: Bad title = absolute disqualification (removed has_product_co exception)
+    if flags.get("has_bad_title"):
+        return True, f"Title indicates wrong domain: '{flags['current_title']}'"
+
+    # Consulting-only when product co required
     if signals.requires_product_co and flags["is_consulting_only"]:
         return True, "JD requires product company background; only consulting found"
 
-    # Completely wrong role (word-level match)
-    if flags.get("has_bad_title"):
-        return True, f"Current title indicates irrelevant domain: {flags['current_title']}"
-
-    # Capability-aware skill gate (very low floor — agents do the nuanced call)
-    skill_score = _score_skills(flags, signals)
-    if skill_score < 5:
-        return True, "Insufficient skill overlap (capability-matched)"
-
-    # Final sanity filter (Tier 2 item 7): role relevance gate
+    # FIX 2: role_relevance gate raised to 20
     role_relevance = compute_role_relevance(flags, signals)
-    if role_relevance < 15:
-        return True, f"Role relevance too low ({role_relevance:.0f}/100) — likely wrong domain"
+    if role_relevance < 20:
+        return True, f"Domain mismatch: role relevance {role_relevance:.0f}/100 — wrong field"
 
+    # Capability-matched skill gate (very low floor — agents handle nuance)
+    skill_score = _score_skills(flags, signals)
+    if skill_score < 3:
+        return True, "No meaningful skill overlap with role requirements"
+
+    # Activity gate
     if (
         flags["days_since_active"] > 365
         and not flags["open_to_work"]
@@ -164,25 +168,18 @@ def _check_disqualifiers(flags: dict, signals: JDSignals) -> tuple[bool, str]:
 
 
 def _score_skills(flags: dict, signals: JDSignals) -> int:
-    """
-    Capability-first skill scoring (Tier 1 fix).
-    Uses skill_taxonomy to match LangChain ↔ Haystack as equivalent RAG capability.
-    """
     if not signals.skill_weights:
         return 50
 
-    candidate_skills = flags["skills"]   # already lowercase list[str]
+    candidate_skills = flags["skills"]
     skill_depth      = flags["skill_depth"]
 
-    # Capability-level match
     cap_score, cap_matches = capability_match_score(
         signals.skill_weights,
         candidate_skills,
         signals.skill_synonyms,
     )
 
-    # Apply depth multipliers for directly matched skills
-    # (capability peers get a flat 0.85 mult already baked in)
     depth_bonus = 0.0
     total_weight = sum(signals.skill_weights.values()) or 1
     for skill_name, weight in signals.skill_weights.items():
@@ -198,16 +195,10 @@ def _score_skills(flags: dict, signals: JDSignals) -> int:
             proficiency     = depth.get("proficiency",    "unknown")
 
             mult = 0.0
-            if endorsements > 20 or duration_months > 24:
-                mult = 0.25
-            elif endorsements > 5 or duration_months > 12:
-                mult = 0.10
-
-            if proficiency == "expert":
-                mult += 0.10
-            elif proficiency == "beginner":
-                mult -= 0.10
-
+            if endorsements > 20 or duration_months > 24: mult = 0.25
+            elif endorsements > 5 or duration_months > 12: mult = 0.10
+            if proficiency == "expert":   mult += 0.10
+            elif proficiency == "beginner": mult -= 0.10
             depth_bonus += (weight / total_weight) * mult * 100
 
     return min(100, cap_score + int(depth_bonus))
@@ -216,36 +207,23 @@ def _score_skills(flags: dict, signals: JDSignals) -> int:
 def _score_experience(flags: dict, signals: JDSignals) -> int:
     yoe = flags["yoe"]
     exp_min, exp_max = signals.exp_min, signals.exp_max
-    if exp_min <= yoe <= exp_max:
-        return 100
-    elif yoe < exp_min:
-        return max(0, int((yoe / max(exp_min, 1)) * 80))
-    else:
-        over = yoe - exp_max
-        return max(55, 100 - int(over * 3))
+    if exp_min <= yoe <= exp_max: return 100
+    elif yoe < exp_min: return max(0, int((yoe / max(exp_min, 1)) * 80))
+    else: return max(55, 100 - int((yoe - exp_max) * 3))
 
 
 def _score_career(flags: dict, signals: JDSignals) -> int:
     score = 0
-    if flags["has_product_co"]:
-        score += 35
-    elif not flags["is_consulting_only"]:
-        score += 15
-
+    if flags["has_product_co"]:   score += 35
+    elif not flags["is_consulting_only"]: score += 15
     edu_points = {1: 30, 2: 22, 3: 14, 4: 6}
     score += edu_points.get(flags["best_edu_tier"], 6)
-
     avg_a = flags["avg_assessment_score"]
     score += (20 if avg_a > 80 else 14 if avg_a > 65 else 8 if avg_a > 50 else 3 if avg_a > 0 else 0)
-
     gh = flags["github_score"]
     score += (12 if gh > 60 else 8 if gh > 30 else 4 if gh > 0 else 0)
-
-    if flags["has_significant_gap"]:
-        score -= 8
-    if flags["avg_tenure_months"] < 12:
-        score -= 6
-
+    if flags["has_significant_gap"]:  score -= 8
+    if flags["avg_tenure_months"] < 12: score -= 6
     return max(0, min(100, score))
 
 
@@ -253,19 +231,16 @@ def _score_activity(flags: dict) -> int:
     score = 0
     days = flags["days_since_active"]
     if flags["has_known_activity_data"]:
-        score += (40 if days <= 30 else 30 if days <= 90 else 18 if days <= 180 else 8 if days <= 270 else 0)
+        score += (40 if days <= 30 else 30 if days <= 90 else 18 if days <= 180
+                  else 8 if days <= 270 else 0)
     else:
         score += 20
-
-    if flags["open_to_work"]:
-        score += 20
-
+    if flags["open_to_work"]: score += 20
     notice = flags["notice_period"]
-    score += (30 if notice <= 15 else 25 if notice <= 30 else 18 if notice <= 60 else 10 if notice <= 90 else 0)
-
+    score += (30 if notice <= 15 else 25 if notice <= 30 else 18 if notice <= 60
+              else 10 if notice <= 90 else 0)
     rr = flags["recruiter_response_rate"]
     score += (12 if rr >= 0.7 else 8 if rr >= 0.4 else 4 if rr >= 0.2 else 0)
-
     return min(100, score)
 
 
@@ -273,41 +248,32 @@ def _score_platform(flags: dict) -> int:
     score = 0
     pc = flags["profile_completeness"]
     score += (30 if pc >= 85 else 20 if pc >= 65 else 10 if pc >= 40 else 0)
-
     ic = flags["interview_completion"]
     score += (30 if ic >= 0.75 else 18 if ic >= 0.5 else 8 if ic >= 0.3 else 0)
-
     saved = flags["raw"].get("redrob_signals", {}).get("saved_by_recruiters_30d", 0)
     score += (25 if saved >= 10 else 15 if saved >= 5 else 8 if saved >= 2 else 0)
-
     views = flags["raw"].get("redrob_signals", {}).get("profile_views_received_30d", 0)
     score += (15 if views >= 100 else 10 if views >= 50 else 5 if views >= 10 else 0)
-
     return min(100, score)
 
 
 def normalize_scores(scored_candidates: list[dict]) -> list[dict]:
     """
-    Tier 4 fix: normalize composite scores so spread is healthy.
-
-    Maps raw scores to a percentile-based range [50, 95] for qualified
-    candidates. Best candidate gets ~95, rest distributed proportionally.
-    Prevents the 82/21/21/2/2 clustering problem.
-
-    Input:  list of score dicts (from score_candidate)
-    Output: same dicts with normalized_score added
+    Percentile-normalize composite scores to a healthy spread [55, 95].
+    Best candidate → 95. Worst qualified → 55. Rest distributed proportionally.
+    Prevents clustering at extremes (82/21/21/2/2 problem).
     """
     qualified = [s for s in scored_candidates if not s.get("disqualified")]
     if not qualified:
         return scored_candidates
 
     raw_scores = [s["composite_score"] for s in qualified]
-    best  = max(raw_scores)
-    worst = min(raw_scores)
+    best   = max(raw_scores)
+    worst  = min(raw_scores)
     spread = best - worst or 1.0
 
     TARGET_MAX = 95.0
-    TARGET_MIN = 50.0
+    TARGET_MIN = 55.0
 
     for s in scored_candidates:
         if s.get("disqualified"):

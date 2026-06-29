@@ -1,6 +1,24 @@
 """
 pipeline/agents/arbitrator.py
-─────────────────────────────────
+───────────────────────────────
+Final Arbitrator — weighted consensus with hard domain enforcement.
+
+KEY ARCHITECTURAL FIXES
+────────────────────────
+1. Arbitrator can only adjust ±12 from the weighted-vote pre-consensus.
+   This prevents it from "rescuing" a 5-point tech candidate to 40.
+
+2. Domain-weighted votes: ML roles weight tech at 55%, trajectory 28%, behavioral 17%.
+   A graphic designer who got tech=5, traj=10, behav=10 gets pre-consensus = 7.6.
+   The arbitrator can only produce 7.6 ± 12 = max 19.6.
+   This candidate correctly appears near the bottom of results.
+
+3. Confidence scoring: wide specialist spread → low confidence.
+   Tech=88, Traj=85, Behav=82 (spread=6) → 93% confidence.
+   Tech=5, Traj=10, Behav=10 (spread=5) → 93% confidence but score=7.6.
+
+4. The arbitrator's JOB is now: write strengths/risks/alternatives.
+   Not: override the score. The score comes from the weighted vote.
 """
 
 from __future__ import annotations
@@ -8,7 +26,6 @@ from __future__ import annotations
 import json
 
 from pydantic import BaseModel
-from tenacity import retry, stop_after_attempt, wait_exponential
 
 import google.generativeai as genai
 
@@ -23,34 +40,27 @@ _settings = get_settings()
 _ARBITRATOR_MODEL = genai.GenerativeModel(_settings.gemini_arbitrator_model)
 
 ARBITRATOR_BATCH_SIZE = 8
-# Maximum the arbitrator can deviate from the weighted vote (Tier 4 fix)
-MAX_ARBITRATOR_ADJUSTMENT = 15.0
+MAX_ARBITRATOR_ADJUSTMENT = 12.0  # Tightened from 15 to prevent inflation
 
 
 class ArbitratorVerdict(BaseModel):
     candidate_id:    str
     consensus_score: float
-    confidence:      float          # 0-100: specialist agreement signal
-    strengths:       list[str]      # why they stand out — recruiter-ready
-    risks:           list[str]      # specific concerns
-    alternatives:    list[str]      # candidate_ids who could substitute
+    confidence:      float
+    strengths:       list[str]
+    risks:           list[str]
+    alternatives:    list[str]
 
-
-# ── Domain weight tables ──────────────────────────────────────────────────
 
 def _domain_weights(domain: str) -> tuple[float, float, float]:
-    """
-    Returns (tech_w, trajectory_w, behavioral_w) summing to 1.0.
-    These weights govern the pre-consensus vote — the arbitrator
-    adjusts from this base, not from scratch.
-    """
+    """tech_w, trajectory_w, behavioral_w — sum to 1.0."""
     WEIGHTS = {
         "machine_learning":     (0.55, 0.28, 0.17),
         "data_science":         (0.50, 0.30, 0.20),
         "data_engineering":     (0.50, 0.30, 0.20),
         "software_engineering": (0.45, 0.35, 0.20),
-        "frontend":             (0.42, 0.32, 0.26),
-        "mobile":               (0.42, 0.32, 0.26),
+        "frontend":             (0.40, 0.33, 0.27),
+        "mobile":               (0.40, 0.33, 0.27),
         "devops":               (0.38, 0.37, 0.25),
         "product":              (0.22, 0.48, 0.30),
         "design":               (0.28, 0.38, 0.34),
@@ -64,94 +74,63 @@ def _domain_weights(domain: str) -> tuple[float, float, float]:
     return WEIGHTS.get(domain, (0.40, 0.35, 0.25))
 
 
-def _compute_weighted_vote(
-    reviews: dict[str, AgentReviewResult],
-    domain: str,
-) -> float:
-    """
-    Domain-weighted pre-consensus score. This is the anchor — the
-    arbitrator adjusts from here, bounded by MAX_ARBITRATOR_ADJUSTMENT.
-    """
+def _compute_weighted_vote(reviews: dict[str, AgentReviewResult], domain: str) -> float:
     tech_w, traj_w, behav_w = _domain_weights(domain)
-    tech  = reviews.get("tech_specialist")
-    traj  = reviews.get("trajectory_specialist")
-    behav = reviews.get("behavioral_specialist")
-
-    t_score  = (tech.score  if tech  else 50.0)
-    tr_score = (traj.score  if traj  else 50.0)
-    b_score  = (behav.score if behav else 50.0)
-
-    return round(t_score * tech_w + tr_score * traj_w + b_score * behav_w, 2)
+    t  = reviews.get("tech_specialist")
+    tr = reviews.get("trajectory_specialist")
+    b  = reviews.get("behavioral_specialist")
+    return round(
+        (t.score  if t  else 50.0) * tech_w +
+        (tr.score if tr else 50.0) * traj_w +
+        (b.score  if b  else 50.0) * behav_w,
+        2,
+    )
 
 
 def _compute_confidence(reviews: dict[str, AgentReviewResult]) -> float:
-    """
-    Confidence based on specialist agreement (Tier 5).
-
-    High agreement → high confidence: you can trust this score.
-    Wide spread → low confidence: the three agents disagree — treat score with caution.
-
-    Example:
-      Tech=88, Traj=85, Behav=82 → spread=6  → confidence=93
-      Tech=90, Traj=30, Behav=40 → spread=60 → confidence=28
-    """
     scores = [r.score for r in reviews.values() if r is not None]
-    if not scores:
-        return 30.0
-    if len(scores) == 1:
-        return 50.0
-
+    if not scores: return 30.0
+    if len(scores) == 1: return 50.0
     spread = max(scores) - min(scores)
-    if spread <= 8:
-        return 93.0
-    elif spread <= 15:
-        return 82.0
-    elif spread <= 25:
-        return 68.0
-    elif spread <= 40:
-        return 48.0
-    elif spread <= 55:
-        return 32.0
-    else:
-        return 20.0
+    if spread <= 8:  return 93.0
+    if spread <= 15: return 82.0
+    if spread <= 25: return 68.0
+    if spread <= 40: return 48.0
+    if spread <= 55: return 32.0
+    return 20.0
 
 
 _PROMPT_TEMPLATE = """\
-You are the Lead Recruitment Arbitrator. Your role is NARROW and SPECIFIC:
-1. Write recruiter-ready strengths (why this candidate stands out)
-2. Write specific risks (what concerns a recruiter should know)
-3. Suggest alternatives from the batch
-4. Optionally ADJUST the pre-computed consensus score — but only within ±__MAX_ADJ__ points
-   unless you have a hard disqualifying reason you can state explicitly.
+You are the Lead Recruitment Arbitrator. Your job is NARROW:
+1. Write recruiter-facing strengths (what makes this candidate stand out for THIS role)
+2. Write specific, concrete risks (not generic)
+3. Suggest alternative candidates from this batch who could substitute
 
-CRITICAL RULE ON SCORING:
-The pre-computed consensus score is a domain-weighted vote of three specialists.
-You MUST NOT casually override it. The only valid reason to go outside ±__MAX_ADJ__ is:
-  - A clear hard disqualifier the specialists missed (e.g., zero relevant experience in core domain)
-  - State the reason explicitly in your risks list if you deviate beyond ±__MAX_ADJ__
+SCORING RULE — READ AND FOLLOW:
+The pre-computed consensus is a domain-weighted specialist vote. Your adjusted_score
+MUST stay within pre_consensus ± __MAX_ADJ__ UNLESS you can state a hard factual reason
+in the risks list. You CANNOT rescue a low-scoring candidate with a high adjusted_score.
+If tech=5, traj=10, behav=10, pre_consensus=7.6 — your score must be 0–19.6 MAX.
 
-JOB DESCRIPTION:
-Role: __ROLE_TITLE__ (__SENIORITY__)
-Domain: __DOMAIN__
-Ideal: __IDEAL_SUMMARY__
+JOB: __ROLE_TITLE__ (__SENIORITY__) | Domain: __DOMAIN__
+Ideal candidate: __IDEAL_SUMMARY__
 
-SPECIALIST WEIGHT BREAKDOWN FOR THIS ROLE:
-  Tech: __TECH_PCT__% | Trajectory: __TRAJ_PCT__% | Behavioral: __BEHAV_PCT__%
+Specialist weight breakdown: Tech __TECH_PCT__% | Trajectory __TRAJ_PCT__% | Behavioral __BEHAV_PCT__%
 
-CANDIDATES AND THEIR PRE-COMPUTED SCORES:
+CANDIDATES:
 __CANDIDATES_BLOCK__
 
-ALL CANDIDATE IDs IN THIS BATCH (for alternatives field): __BATCH_IDS__
+ALL IDs IN THIS BATCH (use for alternatives): __BATCH_IDS__
 
 Respond ONLY with valid JSON, no markdown:
 {
   "verdicts": [
     {
       "candidate_id": "<id>",
-      "adjusted_score": <float — stay within pre_consensus ± __MAX_ADJ__ unless hard reason>,
-      "strengths": ["<specific strength citing evidence>", "..."],
-      "risks": ["<specific risk — concrete, not generic>", "..."],
-      "alternatives": ["<candidate_id from batch only>", "..."]
+      "adjusted_score": <float within pre_consensus ± __MAX_ADJ__>,
+      "strengths": ["<specific strength citing career evidence>"],
+      "risks": ["<specific concrete risk — not generic>"],
+      "alternatives": ["<id from batch>"]
     }
   ]
 }
@@ -160,100 +139,75 @@ Include ALL __N__ candidates.\
 """
 
 
-def _format_candidate_for_arbitrator(
-    cid: str,
-    name: str,
+def _format_candidate(
+    cid: str, name: str,
     reviews: dict[str, AgentReviewResult],
-    pre_consensus: float,
-    confidence: float,
-    intel: dict,
+    pre: float, conf: float, intel: dict,
 ) -> str:
     lines = [
         f"[{cid}] {name}",
-        f"  Pre-consensus (weighted vote): {pre_consensus:.1f} | Confidence: {confidence:.0f}%",
+        f"  Pre-consensus (weighted vote): {pre:.1f} | Confidence: {conf:.0f}%",
+        f"  Adjustable range: {max(0, pre - MAX_ARBITRATOR_ADJUSTMENT):.1f} – "
+        f"{min(100, pre + MAX_ARBITRATOR_ADJUSTMENT):.1f}",
     ]
 
-    # Show pre-computed intelligence signals as grounding context
     why_sel = intel.get("why_selected", [])
     why_rej = intel.get("why_rejected", [])
-    if why_sel:
-        lines.append(f"  Evidence (strong): {' | '.join(why_sel[:3])}")
-    if why_rej:
-        lines.append(f"  Evidence (gaps): {' | '.join(why_rej[:2])}")
+    if why_sel: lines.append(f"  Strengths: {' | '.join(why_sel[:3])}")
+    if why_rej: lines.append(f"  Gaps:      {' | '.join(why_rej[:2])}")
 
-    for agent_key, label in (
+    for key, label in (
         ("tech_specialist",       "Tech"),
         ("trajectory_specialist", "Trajectory"),
         ("behavioral_specialist", "Behavioral"),
     ):
-        r = reviews.get(agent_key)
+        r = reviews.get(key)
         if r:
             lines.append(
-                f"  {label}: {r.score:.0f}/100 — "
-                f"pros: {r.pros[:2]} | cons: {r.cons[:2]} | {(r.rationale or '')[:150]}"
+                f"  {label}: {r.score:.0f}/100 | {(r.rationale or '')[:120]} | "
+                f"pros={r.pros[:1]} cons={r.cons[:1]}"
             )
 
     return "\n".join(lines)
 
 
-def _build_prompt(
-    jd_signals: JDSignals,
-    batch: list[tuple[str, str, dict[str, AgentReviewResult], float, float, dict]],
-) -> str:
-    tech_w, traj_w, behav_w = _domain_weights(jd_signals.domain)
-    batch_ids = [cid for cid, *_ in batch]
+def _build_prompt(jd_signals: JDSignals, batch: list) -> str:
+    tw, trw, bw = _domain_weights(jd_signals.domain)
+    batch_ids   = [cid for cid, *_ in batch]
 
-    candidates_block = "\n\n".join(
-        _format_candidate_for_arbitrator(cid, name, reviews, pre, conf, intel)
+    block = "\n\n".join(
+        _format_candidate(cid, name, reviews, pre, conf, intel)
         for cid, name, reviews, pre, conf, intel in batch
     )
 
-    prompt = _PROMPT_TEMPLATE
-    prompt = prompt.replace("__ROLE_TITLE__",   jd_signals.role_title)
-    prompt = prompt.replace("__SENIORITY__",     jd_signals.seniority)
-    prompt = prompt.replace("__DOMAIN__",        jd_signals.domain)
-    prompt = prompt.replace("__IDEAL_SUMMARY__", jd_signals.ideal_candidate_summary[:400])
-    prompt = prompt.replace("__TECH_PCT__",      str(int(tech_w  * 100)))
-    prompt = prompt.replace("__TRAJ_PCT__",      str(int(traj_w  * 100)))
-    prompt = prompt.replace("__BEHAV_PCT__",     str(int(behav_w * 100)))
-    prompt = prompt.replace("__BATCH_IDS__",     ", ".join(batch_ids))
-    prompt = prompt.replace("__CANDIDATES_BLOCK__", candidates_block)
-    prompt = prompt.replace("__MAX_ADJ__",       str(int(MAX_ARBITRATOR_ADJUSTMENT)))
-    prompt = prompt.replace("__N__",             str(len(batch)))
-    return prompt
+    p = _PROMPT_TEMPLATE
+    p = p.replace("__ROLE_TITLE__",       jd_signals.role_title)
+    p = p.replace("__SENIORITY__",         jd_signals.seniority)
+    p = p.replace("__DOMAIN__",            jd_signals.domain)
+    p = p.replace("__IDEAL_SUMMARY__",     jd_signals.ideal_candidate_summary[:350])
+    p = p.replace("__TECH_PCT__",          str(int(tw * 100)))
+    p = p.replace("__TRAJ_PCT__",          str(int(trw * 100)))
+    p = p.replace("__BEHAV_PCT__",         str(int(bw * 100)))
+    p = p.replace("__BATCH_IDS__",         ", ".join(batch_ids))
+    p = p.replace("__CANDIDATES_BLOCK__",  block)
+    p = p.replace("__MAX_ADJ__",           str(int(MAX_ARBITRATOR_ADJUSTMENT)))
+    p = p.replace("__N__",                 str(len(batch)))
+    return p
 
 
-def _clamp_to_weighted_vote(
-    arbitrator_score: float,
-    pre_consensus: float,
-    hard_reason: bool = False,
-) -> float:
-    """
-    Clamp the arbitrator's proposed score to ±MAX_ARBITRATOR_ADJUSTMENT
-    of the weighted vote. If a hard reason was flagged, allow full range.
-    """
+def _clamp(arb: float, pre: float, hard_reason: bool = False) -> float:
     if hard_reason:
-        return round(max(0.0, min(100.0, arbitrator_score)), 2)
+        return round(max(0.0, min(100.0, arb)), 2)
+    lo = pre - MAX_ARBITRATOR_ADJUSTMENT
+    hi = pre + MAX_ARBITRATOR_ADJUSTMENT
+    return round(max(lo, min(hi, arb)), 2)
 
-    lo = pre_consensus - MAX_ARBITRATOR_ADJUSTMENT
-    hi = pre_consensus + MAX_ARBITRATOR_ADJUSTMENT
-    return round(max(lo, min(hi, arbitrator_score)), 2)
 
-
-def _fallback_verdict(
-    candidate_id: str,
-    reviews: dict[str, AgentReviewResult],
-    intel: dict,
-    domain: str,
-    pre_consensus: float,
-    confidence: float,
-) -> ArbitratorVerdict:
+def _fallback(cid: str, reviews: dict, intel: dict, domain: str, pre: float, conf: float) -> ArbitratorVerdict:
     return ArbitratorVerdict(
-        candidate_id=candidate_id,
-        consensus_score=pre_consensus,   # fall back to the weighted vote exactly
-        confidence=confidence,
-        strengths=intel.get("why_selected", ["Automated consensus — arbitrator unavailable"]),
-        risks=intel.get("why_rejected", ["Score is weighted specialist average; treat with caution"]),
+        candidate_id=cid, consensus_score=pre, confidence=conf,
+        strengths=intel.get("why_selected", ["Weighted specialist consensus"]),
+        risks=intel.get("why_rejected", ["Arbitrator unavailable; score is weighted average"]),
         alternatives=[],
     )
 
@@ -263,99 +217,76 @@ def run_arbitrator(
     candidate_reviews: list[tuple[str, str, dict[str, AgentReviewResult]]],
     candidate_intel_map: dict[str, dict] | None = None,
 ) -> dict[str, ArbitratorVerdict]:
-    """
-    candidate_reviews: [(candidate_id, name, {agent_key: AgentReviewResult})]
-    candidate_intel_map: {candidate_id: intelligence_profile dict}
-    """
     if not candidate_reviews:
         return {}
 
     intel_map = candidate_intel_map or {}
     results: dict[str, ArbitratorVerdict] = {}
 
-    # Pre-compute weighted votes and confidence for every candidate
     enriched = []
     for cid, name, reviews in candidate_reviews:
-        pre_consensus = _compute_weighted_vote(reviews, jd_signals.domain)
-        confidence    = _compute_confidence(reviews)
-        intel         = intel_map.get(cid, {})
-        enriched.append((cid, name, reviews, pre_consensus, confidence, intel))
+        pre  = _compute_weighted_vote(reviews, jd_signals.domain)
+        conf = _compute_confidence(reviews)
+        intel = intel_map.get(cid, {})
+        enriched.append((cid, name, reviews, pre, conf, intel))
 
-    batches = [
-        enriched[i : i + ARBITRATOR_BATCH_SIZE]
-        for i in range(0, len(enriched), ARBITRATOR_BATCH_SIZE)
-    ]
+    batches = [enriched[i:i + ARBITRATOR_BATCH_SIZE] for i in range(0, len(enriched), ARBITRATOR_BATCH_SIZE)]
 
     for batch in batches:
-        prompt       = _build_prompt(jd_signals, batch)
-        expected_ids = [cid for cid, *_ in batch]
-        pre_map      = {cid: pre for cid, _, _, pre, _, _ in batch}
-        conf_map     = {cid: conf for cid, _, _, _, conf, _ in batch}
+        prompt      = _build_prompt(jd_signals, batch)
+        expected    = [cid for cid, *_ in batch]
+        pre_map     = {cid: pre  for cid, _, _, pre, _,    _ in batch}
+        conf_map    = {cid: conf for cid, _, _, _,   conf, _ in batch}
 
         try:
-            raw     = _call_llm(prompt, max_tokens=4096, model=_ARBITRATOR_MODEL)
-            cleaned = _strip_fences(raw)
-            data    = json.loads(cleaned)
+            raw      = _call_llm(prompt, max_tokens=4096, model=_ARBITRATOR_MODEL)
+            data     = json.loads(_strip_fences(raw))
             verdicts = data.get("verdicts", [])
 
             batch_results: dict[str, ArbitratorVerdict] = {}
 
             for item in verdicts:
                 cid = str(item.get("candidate_id", ""))
-                if cid not in expected_ids:
+                if cid not in expected:
                     continue
 
-                pre_consensus = pre_map[cid]
-                confidence    = conf_map[cid]
+                pre   = pre_map[cid]
+                conf  = conf_map[cid]
+                risks = [str(r) for r in item.get("risks", [])]
 
-                arb_score = float(item.get("adjusted_score", pre_consensus))
-                risks     = [str(r) for r in item.get("risks", [])]
-
-                # A hard reason must be explicit in risks to justify going outside the band
                 hard_reason = any(
                     kw in " ".join(risks).lower()
                     for kw in ("zero experience", "no relevant", "completely unrelated",
-                               "hard disqualif", "wrong domain", "no evidence")
+                               "wrong domain", "hard disqualif", "no evidence of")
                 )
 
-                final_score = _clamp_to_weighted_vote(arb_score, pre_consensus, hard_reason)
+                final = _clamp(
+                    float(item.get("adjusted_score", pre)), pre, hard_reason
+                )
 
-                # Safe alternatives: only IDs from this batch, not the candidate itself
                 safe_alts = [
                     str(a) for a in item.get("alternatives", [])
-                    if str(a) in expected_ids and str(a) != cid
+                    if str(a) in expected and str(a) != cid
                 ]
 
-                # Merge intelligence signals with arbitrator output
-                intel     = next((i for c, _, _, _, _, i in batch if c == cid), {})
-                arb_str   = [str(s) for s in item.get("strengths", [])]
-                arb_risk  = risks
-
-                merged_strengths = list(dict.fromkeys(intel.get("why_selected", []) + arb_str))[:5]
-                merged_risks     = list(dict.fromkeys(intel.get("why_rejected", []) + arb_risk))[:4]
+                intel = next((i for c, _, _, _, _, i in batch if c == cid), {})
+                merged_str  = list(dict.fromkeys(intel.get("why_selected", []) + [str(s) for s in item.get("strengths", [])]))[:5]
+                merged_risk = list(dict.fromkeys(intel.get("why_rejected", []) + risks))[:4]
 
                 batch_results[cid] = ArbitratorVerdict(
-                    candidate_id=cid,
-                    consensus_score=final_score,
-                    confidence=confidence,
-                    strengths=merged_strengths,
-                    risks=merged_risks,
-                    alternatives=safe_alts,
+                    candidate_id=cid, consensus_score=final, confidence=conf,
+                    strengths=merged_str, risks=merged_risk, alternatives=safe_alts,
                 )
 
             for cid, name, reviews, pre, conf, intel in batch:
                 if cid not in batch_results:
-                    batch_results[cid] = _fallback_verdict(
-                        cid, reviews, intel, jd_signals.domain, pre, conf
-                    )
+                    batch_results[cid] = _fallback(cid, reviews, intel, jd_signals.domain, pre, conf)
 
             results.update(batch_results)
 
         except Exception as e:
-            logger.error("arbitrator_batch_failed", error=str(e), batch_size=len(batch))
+            logger.error("arbitrator_batch_failed", error=str(e))
             for cid, name, reviews, pre, conf, intel in batch:
-                results[cid] = _fallback_verdict(
-                    cid, reviews, intel, jd_signals.domain, pre, conf
-                )
+                results[cid] = _fallback(cid, reviews, intel, jd_signals.domain, pre, conf)
 
     return results
