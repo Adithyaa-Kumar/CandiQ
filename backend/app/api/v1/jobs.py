@@ -177,6 +177,8 @@ def get_job_results(
             retrieval_method=r.retrieval_method,
             rule_composite_score=r.rule_composite_score,
             consensus_score=r.consensus_score,
+            confidence=getattr(r, "confidence", None),
+            normalized_score=getattr(r, "normalized_score", None),
             final_rank=r.final_rank,
             strengths=r.strengths or [],
             risks=r.risks or [],

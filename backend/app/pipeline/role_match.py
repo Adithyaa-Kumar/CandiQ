@@ -150,23 +150,29 @@ def compute_role_relevance(flags: dict, signals: JDSignals) -> float:
     score += min(title_overlap * 15, 40)
 
     # ── 2. Skill overlap (0–40) ───────────────────────────────────────────
+    # HEATMAP FIX: match skills against BOTH the skills list AND career text.
+    # Previously: only skills list. This caused "ranking systems" mentioned in
+    # career descriptions to score 0 in the heatmap even when clearly present.
     candidate_skills = {s.lower() for s in flags["skills"]}
     jd_skills        = {s.lower() for s in signals.skill_weights.keys()}
+    # Combined text for broader matching (skills list + career descriptions)
+    all_candidate_text = skills_text + " " + career_text
 
     matched_jd_skills: set[str] = set()
     for jd_s in jd_skills:
+        # Match against skills list (exact)
         if any(jd_s in cs or cs in jd_s for cs in candidate_skills):
+            matched_jd_skills.add(jd_s)
+        # Match against career text (broader — catches "built ranking systems")
+        elif jd_s in all_candidate_text:
             matched_jd_skills.add(jd_s)
 
     skill_overlap = len(matched_jd_skills)
 
-    # Synonym expansion — only for skills not already matched directly
+    # Synonym expansion — only for skills not already matched
     for canonical, aliases in signals.skill_synonyms.items():
         if canonical.lower() not in matched_jd_skills:
-            if any(
-                any(alias in cs or cs in alias for cs in candidate_skills)
-                for alias in aliases
-            ):
+            if any(alias in all_candidate_text for alias in aliases):
                 skill_overlap += 1
 
     score += min(skill_overlap * 8, 40)

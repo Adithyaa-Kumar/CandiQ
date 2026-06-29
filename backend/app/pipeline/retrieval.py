@@ -94,8 +94,10 @@ def run_retrieval_filter(
 
     for c in candidates:
         flags      = get_career_flags(c, signals)
-        # Attach intelligence profile to flags so score_candidate can use it
+        # Attach intelligence profile + raw dict so score_candidate and
+        # domain_scorer can access the full candidate data
         flags["intelligence_profile"] = c.get("intelligence_profile") or {}
+        flags["raw"] = c   # domain_scorer needs career_history + profile
         rule_score = score_candidate(flags, signals)
         if rule_score["disqualified"]:
             disqualified.append((c, flags, rule_score))

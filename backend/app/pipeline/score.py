@@ -30,6 +30,7 @@ from __future__ import annotations
 from app.pipeline.jd_analyzer import JDSignals
 from app.pipeline.role_match import compute_role_relevance
 from app.pipeline.skill_taxonomy import capability_match_score
+from app.pipeline.domain_scorer import compute_candidate_domain_score
 
 
 def score_candidate(flags: dict, signals: JDSignals) -> dict:
@@ -47,6 +48,22 @@ def score_candidate(flags: dict, signals: JDSignals) -> dict:
     score_platform   = _score_platform(flags)
     role_relevance   = compute_role_relevance(flags, signals)
 
+    # ── DOMAIN SCORE: the primary separation signal ────────────────────────
+    # This answers "has this candidate solved the SAME PROBLEM as the JD?"
+    # A Data Analyst for a Retrieval/Ranking JD gets ~0-20. A Retrieval
+    # Engineer gets 65-100. This is the gate that separates wrong-AI from
+    # right-AI before any other score matters.
+    candidate = flags.get("raw", {})
+    domain_score = compute_candidate_domain_score(candidate, signals.subdomain)
+
+    # Hard gate: below 25 domain score → disqualify even if role_relevance passes.
+    # This catches "AI Specialist doing ResNet moderation" for retrieval JDs.
+    if domain_score < 25 and signals.subdomain != "general":
+        return _disqualified(
+            cid, name,
+            f"Wrong AI subdomain: domain_score={domain_score}/100 for subdomain '{signals.subdomain}'"
+        )
+
     # Evidence bonuses applied to skills dimension
     intel = flags.get("intelligence_profile") or {}
     impact_bonus    = min(15, intel.get("impact_evidence",    0) * 5)
@@ -54,32 +71,33 @@ def score_candidate(flags: dict, signals: JDSignals) -> dict:
     scale_bonus     = min(10, intel.get("scale_evidence",     0) * 4)
     score_skills_aug = min(100, score_skills + impact_bonus + ownership_bonus + scale_bonus)
 
-    # FIX 3: role_relevance anchors the composite — minimum 40% weight.
-    # This ensures wrong-domain candidates cannot score well on career/activity padding.
-    rr_weight   = max(0.40, signals.dim_weights.get("role_relevance", 0.40))
-    other_total = 1.0 - rr_weight
-
-    base_weights = {
-        "skills":     signals.dim_weights.get("skills",      0.30),
-        "career":     signals.dim_weights.get("career",       0.15),
-        "activity":   signals.dim_weights.get("activity",     0.08),
-        "experience": signals.dim_weights.get("experience",   0.05),
-        "platform":   signals.dim_weights.get("platform",     0.02),
+    # ── Weight schedule (spec: skills 25%, role_relevance 30%, career 15%,
+    #    activity 10%, experience 10%, platform 10%)
+    # domain_score gets 15% on top — it is the most important separator.
+    # role_relevance gets 25% (broad domain alignment).
+    # Together domain+role = 40% of the signal, which is correct.
+    WEIGHTS = {
+        "domain":      0.20,   # have they solved THIS exact problem?
+        "role_relevance": 0.25, # are they in the right broad domain?
+        "skills":      0.25,   # do they have the right skills?
+        "career":      0.12,   # pedigree quality
+        "activity":    0.08,   # responsiveness / availability
+        "experience":  0.07,   # YOE alignment
+        "platform":    0.03,   # platform engagement
     }
-    base_sum = sum(base_weights.values()) or 1.0
-    norm_weights = {k: v / base_sum * other_total for k, v in base_weights.items()}
 
     composite = round(
-        score_skills_aug   * norm_weights["skills"]
-        + score_career     * norm_weights["career"]
-        + score_activity   * norm_weights["activity"]
-        + score_experience * norm_weights["experience"]
-        + score_platform   * norm_weights["platform"]
-        + role_relevance   * rr_weight,
+        domain_score       * WEIGHTS["domain"]
+        + role_relevance   * WEIGHTS["role_relevance"]
+        + score_skills_aug * WEIGHTS["skills"]
+        + score_career     * WEIGHTS["career"]
+        + score_activity   * WEIGHTS["activity"]
+        + score_experience * WEIGHTS["experience"]
+        + score_platform   * WEIGHTS["platform"],
         2,
     )
 
-    confidence = _compute_confidence(flags, signals, role_relevance)
+    confidence = _compute_confidence(flags, signals, role_relevance, domain_score)
 
     return {
         "candidate_id":      cid,
@@ -91,6 +109,7 @@ def score_candidate(flags: dict, signals: JDSignals) -> dict:
         "score_activity":    score_activity,
         "score_career":      score_career,
         "score_platform":    score_platform,
+        "domain_score":      domain_score,
         "composite_score":   composite,
         "role_relevance":    role_relevance,
         "confidence":        confidence,
@@ -100,7 +119,7 @@ def score_candidate(flags: dict, signals: JDSignals) -> dict:
     }
 
 
-def _compute_confidence(flags: dict, signals: JDSignals, role_relevance: float) -> float:
+def _compute_confidence(flags: dict, signals: JDSignals, role_relevance: float, domain_score: float = 60.0) -> float:
     intel = flags.get("intelligence_profile") or {}
     evidence_signals = (
         intel.get("production_ai_evidence", 0) +
@@ -114,8 +133,11 @@ def _compute_confidence(flags: dict, signals: JDSignals, role_relevance: float) 
     elif evidence_signals >= 1: base = 45.0
     else:                       base = 25.0
 
-    if role_relevance >= 70:   base = min(100, base + 10)
-    elif role_relevance < 30:  base = max(0,   base - 15)
+    if role_relevance >= 70:    base = min(100, base + 8)
+    elif role_relevance < 30:   base = max(0,   base - 12)
+
+    if domain_score >= 65:      base = min(100, base + 7)
+    elif domain_score < 35:     base = max(0,   base - 10)
 
     return round(base, 1)
 
@@ -303,5 +325,6 @@ def _disqualified(cid: str, name: str, reason: str) -> dict:
         "impact_bonus":      0,
         "ownership_bonus":   0,
         "scale_bonus":       0,
+        "domain_score":      0,
         "normalized_score":  0.0,
     }

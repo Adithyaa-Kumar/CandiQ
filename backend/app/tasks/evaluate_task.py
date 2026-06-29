@@ -180,7 +180,15 @@ def evaluate_job_task(self, job_id: str) -> dict:
             )
             return {"shortlisted": 0, "disqualified": len(disqualified)}
 
-        shortlisted_candidate_dicts = [c for c, _, _, _, _ in shortlist]
+        # Inject domain_score from rule_score into intelligence_profile
+        # so agents and arbitrator can reason about problem-domain fit
+        shortlisted_candidate_dicts = []
+        for c, flags, rule_score, retrieval_score, retrieval_method in shortlist:
+            c_copy = dict(c)
+            intel = dict(c_copy.get("intelligence_profile") or {})
+            intel["domain_score"] = rule_score.get("domain_score", 0)
+            c_copy["intelligence_profile"] = intel
+            shortlisted_candidate_dicts.append(c_copy)
 
         # ── Stage 2 + 3: specialist panel + arbitration ──────────────────
         def _progress_cb(completed: int, total: int) -> None:

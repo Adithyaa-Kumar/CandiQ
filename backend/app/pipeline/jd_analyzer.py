@@ -37,6 +37,10 @@ MODEL = genai.GenerativeModel(settings.gemini_panel_model)
 class JDSignals(BaseModel):
     role_title: str = ""
     domain: str = "other"
+    # Fine-grained sub-domain — the PROBLEM the role solves.
+    # e.g. domain=machine_learning + subdomain=retrieval_ranking
+    # This drives candidate_domain_score which is the dominant filter.
+    subdomain: str = "general"
     seniority: str = "mid"
 
     exp_min: int = 2
@@ -81,6 +85,7 @@ No markdown, no explanation — raw JSON only.
 {
   "role_title": "exact title from JD",
   "domain": "one of: software_engineering | machine_learning | data_engineering | data_science | frontend | mobile | devops | design | product | finance | legal | operations | sales | marketing | hr | other",
+  "subdomain": "the specific problem this role solves. Examples: retrieval_ranking | llm_apps | computer_vision | recommendation_systems | ml_platform | nlp_classification | speech | tabular_ml | data_pipelines | backend_systems | frontend_web | mobile_apps | devops_infra | analytics | general. Pick the MOST specific match.",
   "seniority": "one of: intern | junior | mid | senior | lead | principal | executive",
   "exp_min": <integer years, 0 if not stated>,
   "exp_max": <integer years, 99 if no upper bound>,
@@ -213,6 +218,7 @@ def analyze_jd(jd_text: str) -> JDSignals:
     signals = JDSignals(
         role_title=data.get("role_title", "Untitled Role"),
         domain=data.get("domain", "other"),
+        subdomain=data.get("subdomain", "general"),
         seniority=data.get("seniority", "mid"),
         exp_min=int(data.get("exp_min", 2)),
         exp_max=int(data.get("exp_max", 15)),

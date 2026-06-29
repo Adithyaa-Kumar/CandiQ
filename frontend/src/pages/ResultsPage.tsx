@@ -13,10 +13,24 @@ function JobMatchHeatmap({ topSkills, results }: {
   const topFive = topSkills.slice(0, 8)
 
   const getSkillCoverage = (skill: string) => {
-    const matched = results.filter(r =>
-      !r.is_disqualified &&
-      r.agent_reviews.some(a => a.pros.some(p => p.toLowerCase().includes(skill.toLowerCase())))
-    )
+    const skillLc = skill.toLowerCase()
+    // Scan all text signals: agent pros/cons/rationale, strengths, risks, title
+    // This fixes the undercounting bug where skills in career text but not
+    // explicitly named in agent pros were scoring 0%
+    const matched = results.filter(r => {
+      if (r.is_disqualified) return false
+      const allText = [
+        r.current_title ?? "",
+        ...(r.strengths ?? []),
+        ...(r.risks ?? []),
+        ...r.agent_reviews.flatMap(a => [
+          ...a.pros,
+          ...a.cons,
+          a.rationale ?? "",
+        ]),
+      ].join(" ").toLowerCase()
+      return allText.includes(skillLc)
+    })
     return Math.round((matched.length / Math.max(results.filter(r => !r.is_disqualified).length, 1)) * 100)
   }
 
